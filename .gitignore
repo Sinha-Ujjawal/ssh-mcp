@@ -1,0 +1,7 @@
+tags
+build
+*.swp
+*.swo
+nob
+nob.old
+venv

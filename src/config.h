@@ -1,0 +1,5 @@
+#define JSONRPC_VER "2.0"
+#define MCP_PROTOCOL_VER "2024-11-05"
+
+#define SERVER_INFO_NAME "ssh"
+#define SERVER_INFO_VER "0.0.1"
