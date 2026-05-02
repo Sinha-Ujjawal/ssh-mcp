@@ -29,6 +29,8 @@ typedef enum {
     NOB_MCP_METHOD_INITIALIZE,
     NOB_MCP_METHOD_NOTIFS_INITIALIZED,
     NOB_MCP_METHOD_TOOLS_LIST,
+    NOB_MCP_METHOD_RESOURCES_LIST,
+    NOB_MCP_METHOD_PROMPTS_LIST,
     __count_Nob_MCP_Method_Kind,
 } Nob_MCP_Method_Kind;
 
@@ -166,6 +168,14 @@ void nob_mcp_end_object_param_impl(Nob_MCP_Session *session, const char *file, s
 #define nob_mcp_flush_tools_list(session) nob_mcp_flush_tools_list_impl(session, __FILE__, __LINE__)
 bool nob_mcp_flush_tools_list_impl(Nob_MCP_Session *session, const char *file, size_t line_no);
 
+// TODO: Complete implementation of resources/list
+#define nob_mcp_handle_resources_list(session, req) nob_mcp_handle_resources_list_impl(session, req, __FILE__, __LINE__)
+bool nob_mcp_handle_resources_list_impl(Nob_MCP_Session *session, Nob_MCP_Request req, const char *file, size_t line_no);
+
+// TODO: Complete implementation of prompts/list
+#define nob_mcp_handle_prompts_list(session, req) nob_mcp_handle_prompts_list_impl(session, req, __FILE__, __LINE__)
+bool nob_mcp_handle_prompts_list_impl(Nob_MCP_Session *session, Nob_MCP_Request req, const char *file, size_t line_no);
+
 void nob_free_mcp_session(Nob_MCP_Session *session);
 
 #ifdef NOB_MCP_IMPLEMENTATION
@@ -223,13 +233,17 @@ bool nob_mcp_parse_request(Nob_MCP_Session *session, Nob_MCP_Request *req) {
             is_id_parsed = true;
         } else if (strcmp(jimp->string, "method") == 0) {
             if (!jimp_string(jimp)) return false;
-            static_assert(__count_Nob_MCP_Method_Kind == 3, "Handle new Nob_MCP_Method_Kind");
+            static_assert(__count_Nob_MCP_Method_Kind == 5, "Handle new Nob_MCP_Method_Kind");
             if (strcmp(jimp->string, "initialize") == 0) {
                 req->method = NOB_MCP_METHOD_INITIALIZE;
             } else if (strcmp(jimp->string, "notifications/initialized") == 0) {
                 req->method = NOB_MCP_METHOD_NOTIFS_INITIALIZED;
             } else if (strcmp(jimp->string, "tools/list") == 0) {
                 req->method = NOB_MCP_METHOD_TOOLS_LIST;
+            } else if (strcmp(jimp->string, "resources/list") == 0) {
+                req->method = NOB_MCP_METHOD_RESOURCES_LIST;
+            } else if (strcmp(jimp->string, "prompts/list") == 0) {
+                req->method = NOB_MCP_METHOD_PROMPTS_LIST;
             } else {
                 jimp_diagf(jimp, "ERROR: Don't recognize the method type: %s\n", jimp->string);
                 return false;
@@ -255,11 +269,13 @@ bool nob_mcp_parse_request(Nob_MCP_Session *session, Nob_MCP_Request *req) {
 }
 
 const char *nob_mcp_method_kind_to_cstr(Nob_MCP_Method_Kind kind) {
-    static_assert(__count_Nob_MCP_Method_Kind == 3, "Handle new Nob_MCP_Method_Kind");
+    static_assert(__count_Nob_MCP_Method_Kind == 5, "Handle new Nob_MCP_Method_Kind");
     switch (kind) {
         case NOB_MCP_METHOD_INITIALIZE        : return "initialize";
         case NOB_MCP_METHOD_NOTIFS_INITIALIZED: return "notifications/initialized";
         case NOB_MCP_METHOD_TOOLS_LIST        : return "tools/list";
+        case NOB_MCP_METHOD_RESOURCES_LIST    : return "resources/list";
+        case NOB_MCP_METHOD_PROMPTS_LIST      : return "prompts/list";
         case __count_Nob_MCP_Method_Kind:
         default:
             nob_log(ERROR, "Unknown Nob_MCP_Method_Kind: %d, returning `UNKNOWN`", kind);
@@ -763,6 +779,56 @@ bool nob_mcp_flush_tools_list_impl(Nob_MCP_Session *session, const char *file, s
     return nob_mcp__flush_jim(session);
 }
 
+bool nob_mcp_handle_resources_list_impl(Nob_MCP_Session *session, Nob_MCP_Request req, const char *file, size_t line_no) {
+    nob_mcp__assert_request_method(req, NOB_MCP_METHOD_RESOURCES_LIST, file, line_no);
+    Jim *jim = &session->jim;
+    jim_begin(jim);
+    jim_object_begin(jim); {
+        // jsonrpc version
+        jim_member_key(jim, "jsonrpc");
+        jim_string(jim, session->mcp->pinfo.jsonrpc_ver);
+
+        // message id
+        jim_member_key(jim, "id");
+        jim_integer(jim, req.id);
+
+        // Protocol and Server Info
+        jim_member_key(jim, "result");
+        jim_object_begin(jim); {
+            // resources
+            jim_member_key(jim, "resources");
+            jim_array_begin(jim); {
+            } jim_array_end(jim);
+        } jim_object_end(jim);
+    } jim_object_end(jim);
+    return nob_mcp__flush_jim(session);
+}
+
+bool nob_mcp_handle_prompts_list_impl(Nob_MCP_Session *session, Nob_MCP_Request req, const char *file, size_t line_no) {
+    nob_mcp__assert_request_method(req, NOB_MCP_METHOD_PROMPTS_LIST, file, line_no);
+    Jim *jim = &session->jim;
+    jim_begin(jim);
+    jim_object_begin(jim); {
+        // jsonrpc version
+        jim_member_key(jim, "jsonrpc");
+        jim_string(jim, session->mcp->pinfo.jsonrpc_ver);
+
+        // message id
+        jim_member_key(jim, "id");
+        jim_integer(jim, req.id);
+
+        // Protocol and Server Info
+        jim_member_key(jim, "result");
+        jim_object_begin(jim); {
+            // prompts
+            jim_member_key(jim, "prompts");
+            jim_array_begin(jim); {
+            } jim_array_end(jim);
+        } jim_object_end(jim);
+    } jim_object_end(jim);
+    return nob_mcp__flush_jim(session);
+}
+
 #ifndef NOB_MCP_STRIP_PREFIX_GUARD_
 #define NOB_MCP_STRIP_PREFIX_GUARD_
     #ifndef NOB_UNSTRIP_PREFIX
@@ -802,6 +868,8 @@ bool nob_mcp_flush_tools_list_impl(Nob_MCP_Session *session, const char *file, s
        #define mcp_begin_object_param        nob_mcp_begin_object_param
        #define mcp_end_object_param          nob_mcp_end_object_param
        #define mcp_flush_tools_list          nob_mcp_flush_tools_list
+       #define mcp_handle_resources_list     nob_mcp_handle_resources_list
+       #define mcp_handle_prompts_list       nob_mcp_handle_prompts_list
        #define free_mcp_session              nob_free_mcp_session
     #endif // NOB_UNSTRIP_PREFIX
 #endif // NOB_MCP_STRIP_PREFIX_GUARD_

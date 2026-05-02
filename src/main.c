@@ -75,6 +75,12 @@ bool handle_session(
                 } mcp_end_tools_list(&session);
                 if (!mcp_flush_tools_list(&session)) return_defer(false);
             } break;
+            case NOB_MCP_METHOD_RESOURCES_LIST: {
+                if (!mcp_handle_resources_list(&session, req)) return_defer(false);
+            } break;
+            case NOB_MCP_METHOD_PROMPTS_LIST: {
+                if (!mcp_handle_prompts_list(&session, req)) return_defer(false);
+            } break;
             case __count_Nob_MCP_Method_Kind:
             default: {
                 nob_log(ERROR, "Could not handle unknown request method");
