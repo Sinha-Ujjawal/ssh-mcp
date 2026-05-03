@@ -105,6 +105,8 @@ bool jimp_is_object_ahead(Jimp *jimp);
 /// Skips the member in the object
 bool jimp_skip_member(Jimp *jimp);
 
+#define jimp_string_as_sv(jimp) nob_sv_from_parts(jimp->token_start + 1, jimp->point - jimp->token_start - 2)
+
 #endif // JIMP_H_
 
 #ifdef JIMP_IMPLEMENTATION

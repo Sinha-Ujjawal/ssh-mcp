@@ -1,15 +1,15 @@
-#ifndef NOB_BUFFERED_READER_H_
-#define NOB_BUFFERED_READER_H_
+#ifndef NOB_BR_H_
+#define NOB_BR_H_
 
-#ifndef NOB_BUFFERED_READER_DEFAULT_CAPACITY
+#ifndef NOB_BR_DEFAULT_CAPACITY
 // 8KBs
-#define NOB_BUFFERED_READER_DEFAULT_CAPACITY (8 * 1024)
-#endif // NOB_BUFFERED_READER_DEFAULT_CAPACITY
+#define NOB_BR_DEFAULT_CAPACITY (8 * 1024)
+#endif // NOB_BR_DEFAULT_CAPACITY
 
-#ifndef NOB_BUFFERED_READER_DEFAULT_POLL
+#ifndef NOB_BR_DEFAULT_POLL
 // 10ms
-#define NOB_BUFFERED_READER_DEFAULT_POLL 10
-#endif // NOB_BUFFERED_READER_DEFAULT_POLL
+#define NOB_BR_DEFAULT_POLL 10
+#endif // NOB_BR_DEFAULT_POLL
 
 // Fixed size Buffer
 typedef struct {
@@ -30,7 +30,11 @@ bool nob_br_read_while_to_sb(Nob_Buffered_Reader *reader, int (*predicate)(int c
 bool nob_br_read_line(Nob_Buffered_Reader *reader, void (*clb)(void *ctx, char b), void *ctx);
 bool nob_br_read_line_to_sb(Nob_Buffered_Reader *reader, Nob_String_Builder *sb);
 
-#ifdef NOB_BUFFERED_READER_IMPLEMENTATION
+#endif // NOB_BR_H_
+
+#ifdef NOB_BR_IMPLEMENTATION
+#ifndef NOB_BR_IMPLEMENTATION_GAURD_
+#define NOB_BR_IMPLEMENTATION_GAURD_
 
 #ifdef _WIN32
     #define WIN32_LEAN_AND_MEAN
@@ -48,8 +52,8 @@ bool nob_br_read_line_to_sb(Nob_Buffered_Reader *reader, Nob_String_Builder *sb)
 Nob_Buffered_Reader nob_create_br(int fdin) {
     Nob_Buffered_Reader ret = {0};
     ret.fdin = fdin;
-    ret.poll_timeout = NOB_BUFFERED_READER_DEFAULT_POLL;
-    ret.capacity = NOB_BUFFERED_READER_DEFAULT_CAPACITY;
+    ret.poll_timeout = NOB_BR_DEFAULT_POLL;
+    ret.capacity = NOB_BR_DEFAULT_CAPACITY;
     return ret;
 }
 
@@ -160,10 +164,11 @@ bool nob_br_read_line_to_sb(Nob_Buffered_Reader *reader, Nob_String_Builder *sb)
     return true;
 }
 
-#endif // NOB_BUFFERED_READER_IMPLEMENTATION
+#endif // NOB_BR_IMPLEMENTATION_GAURD_
+#endif // NOB_BR_IMPLEMENTATION
 
-#ifndef NOB_BUFFERED_READER_STRIP_PREFIX_GUARD_
-#define NOB_BUFFERED_READER_STRIP_PREFIX_GUARD_
+#ifndef NOB_BR_STRIP_PREFIX_GUARD_
+#define NOB_BR_STRIP_PREFIX_GUARD_
     #ifndef NOB_UNSTRIP_PREFIX
         #define Buffered_Reader     Nob_Buffered_Reader
         #define create_br           nob_create_br
@@ -173,6 +178,4 @@ bool nob_br_read_line_to_sb(Nob_Buffered_Reader *reader, Nob_String_Builder *sb)
         #define br_read_line        nob_br_read_line
         #define br_read_line_to_sb  nob_br_read_line_to_sb
     #endif // NOB_UNSTRIP_PREFIX
-#endif // NOB_BUFFERED_READER_STRIP_PREFIX_GUARD_
-
-#endif // NOB_BUFFERED_READER_H_
+#endif // NOB_BR_STRIP_PREFIX_GUARD_

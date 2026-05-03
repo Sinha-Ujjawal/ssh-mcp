@@ -5,10 +5,11 @@
 // #define NOB_IMPLEMENTATION
 // #define JIM_IMPLEMENTATION
 // #define JIMP_IMPLEMENTATION
+// #define NOB_BR_IMPLEMENTATION
 // #include "nob.h"
 // #include "jim.h"
 // #include "jimp.h"
-// #include "nob_buffered_reader.h"
+// #include "nob_br.h"
 
 typedef struct {
     const char *jsonrpc_ver;
@@ -31,12 +32,16 @@ typedef enum {
     NOB_MCP_METHOD_TOOLS_LIST,
     NOB_MCP_METHOD_RESOURCES_LIST,
     NOB_MCP_METHOD_PROMPTS_LIST,
+    NOB_MCP_METHOD_TOOL_CALL,
     __count_Nob_MCP_Method_Kind,
 } Nob_MCP_Method_Kind;
 
 typedef struct {
     size_t id;
     Nob_MCP_Method_Kind method;
+    Nob_String_View params;
+    Nob_String_View tool_name;
+    Nob_String_View tool_args;
 } Nob_MCP_Request;
 
 typedef enum {
@@ -216,8 +221,7 @@ bool nob_mcp_parse_request(Nob_MCP_Session *session, Nob_MCP_Request *req) {
             return false;
         }
     }
-    String_View line = nob_sb_to_sv(session->sb);
-    nob_log(INFO, "Read line from fdin(%s): |"SV_Fmt"|", session->fdin_label, SV_Arg(line));
+    Nob_String_View line = nob_sb_to_sv(session->sb);
 
     Jimp *jimp = &session->jimp;
     jimp_begin(jimp, session->fdin_label, line.data, line.count);
@@ -233,7 +237,7 @@ bool nob_mcp_parse_request(Nob_MCP_Session *session, Nob_MCP_Request *req) {
             is_id_parsed = true;
         } else if (strcmp(jimp->string, "method") == 0) {
             if (!jimp_string(jimp)) return false;
-            static_assert(__count_Nob_MCP_Method_Kind == 5, "Handle new Nob_MCP_Method_Kind");
+            static_assert(__count_Nob_MCP_Method_Kind == 6, "Handle new Nob_MCP_Method_Kind");
             if (strcmp(jimp->string, "initialize") == 0) {
                 req->method = NOB_MCP_METHOD_INITIALIZE;
             } else if (strcmp(jimp->string, "notifications/initialized") == 0) {
@@ -244,11 +248,34 @@ bool nob_mcp_parse_request(Nob_MCP_Session *session, Nob_MCP_Request *req) {
                 req->method = NOB_MCP_METHOD_RESOURCES_LIST;
             } else if (strcmp(jimp->string, "prompts/list") == 0) {
                 req->method = NOB_MCP_METHOD_PROMPTS_LIST;
+            } else if (strcmp(jimp->string, "tools/call") == 0) {
+                req->method = NOB_MCP_METHOD_TOOL_CALL;
             } else {
                 jimp_diagf(jimp, "ERROR: Don't recognize the method type: %s\n", jimp->string);
                 return false;
             }
             is_method_parsed = true;
+        } else if (strcmp(jimp->string, "params") == 0) {
+            const char *params_start = jimp->point;
+            if (!jimp_object_begin(jimp)) return false;
+            while (jimp_object_member(jimp)) {
+                if (strcmp(jimp->string, "name") == 0) { // tool_name
+                    if (!jimp_string(jimp)) return false;
+                    req->tool_name = nob_sv_from_parts(jimp->token_start + 1, jimp->point - jimp->token_start - 2); // +1 in begin, and -2 in the count is for removing double quotes
+                } else if (strcmp(jimp->string, "arguments") == 0) {
+                    const char *tool_args_start = jimp->point;
+                    if (!jimp_object_begin(jimp)) return false;
+                    while (jimp_object_member(jimp)) jimp_skip_member(jimp);
+                    if (!jimp_object_end(jimp)) return false;
+                    const char *tool_args_end = jimp->point;
+                    req->tool_args = nob_sv_from_parts(tool_args_start, tool_args_end - tool_args_start);
+                } else {
+                    jimp_skip_member(jimp);
+                }
+            }
+            if (!jimp_object_end(jimp)) return false;
+            const char *params_end = jimp->point;
+            req->params = nob_sv_from_parts(params_start, params_end - params_start);
         } else {
             jimp_skip_member(jimp);
         }
@@ -269,24 +296,19 @@ bool nob_mcp_parse_request(Nob_MCP_Session *session, Nob_MCP_Request *req) {
 }
 
 const char *nob_mcp_method_kind_to_cstr(Nob_MCP_Method_Kind kind) {
-    static_assert(__count_Nob_MCP_Method_Kind == 5, "Handle new Nob_MCP_Method_Kind");
+    static_assert(__count_Nob_MCP_Method_Kind == 6, "Handle new Nob_MCP_Method_Kind");
     switch (kind) {
         case NOB_MCP_METHOD_INITIALIZE        : return "initialize";
         case NOB_MCP_METHOD_NOTIFS_INITIALIZED: return "notifications/initialized";
         case NOB_MCP_METHOD_TOOLS_LIST        : return "tools/list";
         case NOB_MCP_METHOD_RESOURCES_LIST    : return "resources/list";
         case NOB_MCP_METHOD_PROMPTS_LIST      : return "prompts/list";
+        case NOB_MCP_METHOD_TOOL_CALL         : return "tools/call";
         case __count_Nob_MCP_Method_Kind:
         default:
             nob_log(ERROR, "Unknown Nob_MCP_Method_Kind: %d, returning `UNKNOWN`", kind);
             return "UNKNOWN";
     }
-}
-
-void nob_mcp__log_request(Nob_MCP_Request req) {
-    nob_log(INFO, "Request[id: %lu]:", req.id);
-    nob_log(INFO, "  Method:");
-    nob_log(INFO, "    Kind: %s", nob_mcp_method_kind_to_cstr(req.method));
 }
 
 bool nob_mcp__write_line(Nob_MCP_Session *session, const char *message, size_t length) {
@@ -302,7 +324,6 @@ defer:
 }
 
 bool nob_mcp__flush_jim(Nob_MCP_Session *session) {
-    nob_log(INFO, "Flushing jim content:");
     fprintf(stderr, SV_Fmt"\n", (int) session->jim.sink_count, session->jim.sink);
     bool result = nob_mcp__write_line(session, session->jim.sink, session->jim.sink_count);
     jim_begin(&session->jim); // Reset JIM
@@ -379,9 +400,9 @@ const char *nob_mcp__tools_list_scope_to_cstr(Nob_MCP_Tools_List_Scope scope) {
 }
 
 void nob_mcp__print_tools_list_scopes(Nob_MCP_Session session) {
-    nob_log(INFO, "Tools List Scopes Content:");
+    nob_log(ERROR, "Tools List Scopes Content:");
     da_foreach(Nob_MCP_Tools_List_Scope, it, &session.tools_list_scopes) {
-        nob_log(INFO, "  %s", nob_mcp__tools_list_scope_to_cstr(*it));
+        nob_log(ERROR, "  %s", nob_mcp__tools_list_scope_to_cstr(*it));
     }
 }
 

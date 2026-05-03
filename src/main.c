@@ -6,11 +6,11 @@
 #define NOB_IMPLEMENTATION
 #define JIM_IMPLEMENTATION
 #define JIMP_IMPLEMENTATION
-#define NOB_BUFFERED_READER_IMPLEMENTATION
+#define NOB_BR_IMPLEMENTATION
 #include "nob.h"
 #include "jim.h"
 #include "jimp.h"
-#include "nob_buffered_reader.h"
+#include "nob_br.h"
 
 #include "config.h"
 #define NOB_MCP_IMPLEMENTATION
@@ -20,10 +20,11 @@ bool handle_session(
     MCP *mcp, const char *fdin_label, int fdin, const char *fdout_label, int fdout) {
     bool result = false;
     MCP_Session session = mcp_create_sesssion(mcp, fdin_label, fdin, fdout_label, fdout);
+    Jimp jimp = {0};
     for (;;) {
         MCP_Request req = {0};
         if (!mcp_parse_request(&session, &req)) return_defer(false);
-        nob_log(INFO, "Got Request[%s]", mcp_method_kind_to_cstr(req.method));
+        nob_log(INFO, "Got Request[%s], Params: |"SV_Fmt"|", mcp_method_kind_to_cstr(req.method), SV_Arg(req.params));
 
         switch(req.method) {
             case MCP_METHOD_INITIALIZE: {
@@ -38,39 +39,39 @@ bool handle_session(
                         mcp_add_param(
                             &session, "text", MCP_PARAM_TYPE_STRING, .desc="input text");
 
-                        mcp_add_array_param(
-                            &session, "complex1", MCP_PARAM_TYPE_STRING, .desc="complex list");
+                        // mcp_add_array_param(
+                        //     &session, "complex1", MCP_PARAM_TYPE_STRING, .desc="complex list");
 
-                        mcp_begin_object_param(&session, "metadata1"); {
-                        } mcp_end_object_param(&session);
+                        // mcp_begin_object_param(&session, "metadata1"); {
+                        // } mcp_end_object_param(&session);
 
-                        mcp_begin_array_param(&session, "complex2"); {
-                            mcp_begin_object_param(&session, "metadata2"); {
-                            } mcp_end_object_param(&session);
-                        } mcp_end_array_param(&session);
+                        // mcp_begin_array_param(&session, "complex2"); {
+                        //     mcp_begin_object_param(&session, "metadata2"); {
+                        //     } mcp_end_object_param(&session);
+                        // } mcp_end_array_param(&session);
 
-                        mcp_begin_array_param(&session, "matrix", .desc="A list containing other lists"); {
-                            // mcp_add_array_param(
-                            //     &session, "integers", MCP_PARAM_TYPE_INTEGER, .desc="A row of numbers");
-                            mcp_begin_array(&session, .desc="An array of integers"); {
-                                mcp_set_array_type(&session, MCP_PARAM_TYPE_INTEGER, .desc="An Integer");
-                            } mcp_end_array(&session);
-                        } mcp_end_array_param(&session);
+                        // mcp_begin_array_param(&session, "matrix", .desc="A list containing other lists"); {
+                        //     // mcp_add_array_param(
+                        //     //     &session, "integers", MCP_PARAM_TYPE_INTEGER, .desc="A row of numbers");
+                        //     mcp_begin_array(&session, .desc="An array of integers"); {
+                        //         mcp_set_array_type(&session, MCP_PARAM_TYPE_INTEGER, .desc="An Integer");
+                        //     } mcp_end_array(&session);
+                        // } mcp_end_array_param(&session);
 
-                        mcp_begin_object_param(&session, "metadata3"); {
-                            mcp_begin_object_param(&session, "metadata3.xyz"); {
-                                mcp_add_param(
-                                    &session, "text", MCP_PARAM_TYPE_STRING, .desc="input text");
-                                mcp_begin_array_param(&session, "metadata3.complex2"); {
-                                    mcp_begin_array_param(&session, "metadata3.complex2.123"); {
-                                        mcp_begin_object_param(&session, "metadata3.complex2.1234"); {
-                                            mcp_add_array_param(
-                                                &session, "complex1", MCP_PARAM_TYPE_STRING, .desc="complex list");
-                                        } mcp_end_object_param(&session);
-                                    } mcp_end_array_param(&session);
-                                } mcp_end_array_param(&session);
-                            } mcp_end_object_param(&session);
-                        } mcp_end_object_param(&session);
+                        // mcp_begin_object_param(&session, "metadata3"); {
+                        //     mcp_begin_object_param(&session, "metadata3.xyz"); {
+                        //         mcp_add_param(
+                        //             &session, "text", MCP_PARAM_TYPE_STRING, .desc="input text");
+                        //         mcp_begin_array_param(&session, "metadata3.complex2"); {
+                        //             mcp_begin_array_param(&session, "metadata3.complex2.123"); {
+                        //                 mcp_begin_object_param(&session, "metadata3.complex2.1234"); {
+                        //                     mcp_add_array_param(
+                        //                         &session, "complex1", MCP_PARAM_TYPE_STRING, .desc="complex list");
+                        //                 } mcp_end_object_param(&session);
+                        //             } mcp_end_array_param(&session);
+                        //         } mcp_end_array_param(&session);
+                        //     } mcp_end_object_param(&session);
+                        // } mcp_end_object_param(&session);
                     } mcp_end_tool(&session);
                 } mcp_end_tools_list(&session);
                 if (!mcp_flush_tools_list(&session)) return_defer(false);
@@ -80,6 +81,29 @@ bool handle_session(
             } break;
             case NOB_MCP_METHOD_PROMPTS_LIST: {
                 if (!mcp_handle_prompts_list(&session, req)) return_defer(false);
+            } break;
+            case NOB_MCP_METHOD_TOOL_CALL: {
+                nob_log(INFO, "Tool Name: |"SV_Fmt"|", SV_Arg(req.tool_name));
+                nob_log(INFO, "Tool Args: |"SV_Fmt"|", SV_Arg(req.tool_args));
+                if (sv_eq(req.tool_name, sv_from_cstr("get_echo"))) {
+                    size_t saved = temp_save();
+                    jimp_begin(&jimp, temp_sprintf("request_id_%zu", req.id), req.tool_args.data, req.tool_args.count);
+                    assert(jimp_object_begin(&jimp));
+                    const char *text = NULL;
+                    while (jimp_object_member(&jimp)) {
+                        if (strcmp(jimp.string, "text") == 0) {
+                            text = jimp.string;
+                        } else {
+                            jimp_skip_member(&jimp);
+                        }
+                    }
+                    assert(text != NULL);
+
+                    assert(jimp_object_end(&jimp));
+                    temp_rewind(saved);
+                    TODO("NOB_MCP_METHOD_TOOL_CALL: get_echo");
+                }
+                TODO("NOB_MCP_METHOD_TOOL_CALL");
             } break;
             case __count_Nob_MCP_Method_Kind:
             default: {
@@ -92,12 +116,13 @@ bool handle_session(
     result = true;
 defer:
     free_mcp_session(&session);
+    free(jimp.string);
     return result;
 }
 
 int main(void) {
     MCP mcp = {0};
-    mcp.pinfo.jsonrpc_ver = JSONRPC_VER;
+    mcp.pinfo.jsonrpc_ver = "2.0";
     mcp.pinfo.protocol_ver = MCP_PROTOCOL_VER;
     mcp.sinfo.name = SERVER_INFO_NAME;
     mcp.sinfo.ver = SERVER_INFO_VER;
