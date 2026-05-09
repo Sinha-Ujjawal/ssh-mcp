@@ -17,12 +17,14 @@ async def test_mcp_server():
             tools = await session.list_tools()
             print(f"Discovered tools: {[t.name for t in tools.tools]}")
 
-            # 3. Test a specific tool call
-            result = await session.call_tool(
+            # 3. Test ssh_connect
+            await session.call_tool(
                 "ssh_connect",
-                arguments={"host": "xyz.com", "port": 8080, "user": "ujsinha"},
+                arguments={"host": "localhost", "port": 2222, "user": "ujsinha"},
             )
-            print(f"Result: {result.content[0].text}")  # type: ignore
+
+            # 4. Test ssh_list_connections
+            await session.call_tool("ssh_list_connections")
 
 
 if __name__ == "__main__":

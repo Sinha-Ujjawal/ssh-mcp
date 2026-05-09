@@ -19,18 +19,17 @@
 #include "nob_mcp.h"
 #include "nob_fixed_deque.h"
 #include "nob_channels.h"
-#include "nob_hash.h"
-#include "nob_ht.h"
 
 #define DEFAULT_SSH_PORT 2222
 
 #define DEFAULT_SSH_MASTER_CONNECTION_PARAMS  \
     "-o", "ControlMaster=yes"                 \
   , "-o", "ControlPersist=4h"                 \
-  , "-o", "StrictHostKeyChecking=accept-new" \
+  , "-o", "StrictHostKeyChecking=accept-new"  \
   , "-fN"
 
-#define TOOL_SSH_CONNECT "ssh_connect"
+#define TOOL_SSH_CONNECT          "ssh_connect"
+#define TOOL_SSH_LIST_CONNECTIONS "ssh_list_connections"
 
 bool set_env_if_missing(const char *name, const char *value) {
     // Check if the variable exists
@@ -63,12 +62,20 @@ bool tools_list_clb(MCP_Request_Handler *request_handler) {
         );
         mcp_add_param(request_handler, "user", MCP_PARAM_TYPE_STRING, .desc="Username to use to connect with the server");
     } mcp_end_tool(request_handler);
+
+    mcp_begin_tool(
+        request_handler,
+        TOOL_SSH_LIST_CONNECTIONS,
+        .desc="List the available control master connections"); {
+    } mcp_end_tool(request_handler);
+
     return true;
 }
 
 typedef struct {
     String_Builder sb;
     Cmd cmd;
+    const char *ssh_master_root;
 } My_Context;
 
 #define CONNECTION_ID_LEN 4
@@ -137,7 +144,7 @@ bool handle_ssh_connect(MCP_Request_Handler *request_handler, My_Context *ctx, J
     String_View control_path_ssh_opt = {0};
     {
         size_t start_count = ctx->sb.count;
-        sb_appendf(&ctx->sb, "ControlPath=~/.ssh/master-%s", connection_id.hex);
+        sb_appendf(&ctx->sb, "ControlPath=%s/master-%s", ctx->ssh_master_root, connection_id.hex);
         sb_append_null(&ctx->sb);
         size_t end_count = ctx->sb.count;
         control_path_ssh_opt = sv_from_parts(ctx->sb.items + start_count, end_count - start_count);
@@ -185,6 +192,33 @@ bool handle_ssh_connect(MCP_Request_Handler *request_handler, My_Context *ctx, J
     }
 }
 
+bool collect_connection_ids(Walk_Entry entry) {
+    if (entry.level == 1) {
+        My_Context *ctx = entry.data;
+        assert(ctx != NULL);
+        String_View sv = sv_from_cstr(entry.path);
+        assert(sv_chop_prefix(&sv, sv_from_cstr(ctx->ssh_master_root)));
+        sv_chop_prefix(&sv, sv_from_cstr("/"));
+        // nob_log(INFO, "File: |"SV_Fmt"|", SV_Arg(sv));
+        if (sv_starts_with(sv, sv_from_cstr("master-"))) {
+            sv_chop_prefix(&sv, sv_from_cstr("master-"));
+            sb_appendf(&ctx->sb, "\n"SV_Fmt, SV_Arg(sv));
+        }
+    }
+    if (entry.level > 1) {
+        *entry.action = WALK_SKIP;
+    }
+    return true;
+}
+
+bool handle_ssh_list_connections(MCP_Request_Handler *request_handler, My_Context *ctx) {
+    assert(ctx != NULL);
+    sb_append_cstr(&ctx->sb, "Below are the list of connection ids:");
+    walk_dir(ctx->ssh_master_root, collect_connection_ids, .data = ctx);
+    mcp_write_text_content_sized(request_handler, ctx->sb.items, ctx->sb.count);
+    return true;
+}
+
 bool tools_call_clb(MCP_Request_Handler *request_handler, String_View tool_name, Jimp *tool_args) {
     My_Context *ctx = request_handler->ctx;
     assert(ctx != NULL);
@@ -194,6 +228,8 @@ bool tools_call_clb(MCP_Request_Handler *request_handler, String_View tool_name,
 
     if (sv_eq(tool_name, sv_from_cstr(TOOL_SSH_CONNECT))) {
         return handle_ssh_connect(request_handler, ctx, tool_args);
+    } else if (sv_eq(tool_name, sv_from_cstr(TOOL_SSH_LIST_CONNECTIONS))) {
+        return handle_ssh_list_connections(request_handler, ctx);
     }
 
     {
@@ -217,11 +253,13 @@ typedef struct {
     Line_Chan *in;
     Jim_Chan *out;
     const char *instructions;
+    const char *ssh_master_root;
 } MCP_Args;
 
 void *thread_mcp(void *arg) {
     MCP_Args *mcp_args = arg;
     My_Context ctx = {0};
+    ctx.ssh_master_root = mcp_args->ssh_master_root;
     MCP_Request_Handler request_handler = create_mcp_request_handler(
         "ssh", "0.0.1",
         tools_list_clb,
@@ -303,13 +341,23 @@ int main(int argc, char **argv) {
         }
     }
 
+    char ssh_master_root[1024];
+    const char *home = getenv("HOME");
+    assert(home != NULL);
+    snprintf(ssh_master_root, sizeof(ssh_master_root), "%s/.ssh", home);
+    if (!mkdir_if_not_exists(ssh_master_root)) return 1;
+
     Line_Chan line_chan = {0};
     Jim_Chan mcp_response_chan = {0};
     Buffered_Reader br = create_br(STDIN_FILENO);
     String_Builder sb = {0};
 
     pthread_t mcp_threads[10];
-    MCP_Args mcp_args = {.in = &line_chan, .out = &mcp_response_chan };
+    MCP_Args mcp_args = {
+        .in = &line_chan,
+        .out = &mcp_response_chan,
+        .ssh_master_root = ssh_master_root,
+    };
     for (size_t i = 0; i < ARRAY_LEN(mcp_threads); i++) {
         pthread_create(&mcp_threads[i], NULL, thread_mcp, &mcp_args);
     }
