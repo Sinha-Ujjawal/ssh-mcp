@@ -19,7 +19,8 @@ async def test_mcp_server():
 
             # 3. Test a specific tool call
             result = await session.call_tool(
-                "get_echo", arguments={"text": "hello test"}
+                "ssh_connect",
+                arguments={"host": "xyz.com", "port": 8080, "user": "ujsinha"},
             )
             print(f"Result: {result.content[0].text}")  # type: ignore
 

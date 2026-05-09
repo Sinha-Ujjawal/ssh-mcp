@@ -5,7 +5,6 @@
 // #include "nob.h"
 // #include "jimp.h"
 // #include "jim.h"
-// #include "nob_br.h"
 
 #define NOB_JSONRPC_VER "2.0"
 
@@ -43,29 +42,15 @@ typedef enum {
 typedef Nob_JSONRPC_Error_Code(*Nob_JSONRPC_Method_Handler)(void *ctx, Nob_String_View method, void *params, Jim *success, Jim *failure, char **error_message);
 
 typedef struct {
-    // Where to read Request
-    int fdin;
-    const char *fdin_label;
-
-    // Where to write Response
-    int fdout;
-    const char *fdout_label;
-
     void *ctx;
 
     // For Reading and Parsing Request
     Nob_JSONRPC_Request_Parser request_parser;
     Nob_JSONRPC_Params_Parser params_parser;
-    Nob_Buffered_Reader buff;
-    Nob_String_Builder sb;
 
     // Method handler
     Nob_JSONRPC_Method_Handler method_handler;
-
-    // For Generating JSON Response
-    Jim success;
-    Jim failure;
-} Nob_JSONRPC_Session;
+} Nob_JSONRPC_Request_Handler;
 
 bool nob_jsonrpc_parse_request(
     Nob_JSONRPC_Request_Parser *parser,
@@ -74,14 +59,18 @@ bool nob_jsonrpc_parse_request(
     void *ctx);
 void nob_free_jsonrpc_request_parser(Nob_JSONRPC_Request_Parser *parser);
 
-Nob_JSONRPC_Session nob_create_jsonrpc_session(
-    int fdin, const char *fdin_label,
-    int fdout, const char *fdout_label,
+Nob_JSONRPC_Request_Handler nob_create_jsonrpc_request_handler(
     Nob_JSONRPC_Params_Parser params_parser,
     Nob_JSONRPC_Method_Handler method_handler,
     void *ctx);
-bool nob_jsonrpc_handle_request(Nob_JSONRPC_Session *session);
-void nob_free_jsonrpc_session(Nob_JSONRPC_Session *session);
+bool nob_jsonrpc_handle_request(
+    Nob_JSONRPC_Request_Handler *request_handler,
+    const char *json_line_label,
+    const char *json_line,
+    size_t json_line_count,
+    Jim *success,
+    Jim *failure);
+void nob_free_jsonrpc_request_handler(Nob_JSONRPC_Request_Handler *request_handler);
 
 #endif // NOB_JSONRPC_H_
 
@@ -90,7 +79,6 @@ void nob_free_jsonrpc_session(Nob_JSONRPC_Session *session);
 #define NOB_JSONRPC_IMPLEMENTATION_GAURD_
 
 #include <string.h>
-#include <unistd.h>
 
 bool nob_jsonrpc__parse_params(Nob_JSONRPC_Params_Parser parser, void *ctx, Nob_String_View method, Jimp *jimp) {
     assert(parser.parse_clb != NULL);
@@ -162,43 +150,15 @@ void nob_free_jsonrpc_request_parser(Nob_JSONRPC_Request_Parser *parser) {
     memset(parser, 0, sizeof(Nob_JSONRPC_Request_Parser));
 }
 
-Nob_JSONRPC_Session nob_create_jsonrpc_session(
-    int fdin, const char *fdin_label,
-    int fdout, const char *fdout_label,
+Nob_JSONRPC_Request_Handler nob_create_jsonrpc_request_handler(
     Nob_JSONRPC_Params_Parser params_parser,
     Nob_JSONRPC_Method_Handler method_handler,
     void *ctx) {
-    Nob_JSONRPC_Session session = {0};
-
-    session.ctx = ctx;
-
-    // Where to read Request
-    session.fdin = fdin;
-    session.fdin_label = fdin_label;
-
-    // Where to write Response
-    session.fdout = fdout;
-    session.fdout_label = fdout_label;
-
-    session.params_parser = params_parser;
-    session.buff = nob_create_br(fdin);
-
-    session.method_handler = method_handler;
-
-    return session;
-}
-
-bool nob_jsonrpc__write_line(int fdout, const char *fdout_label, const char *message, size_t length) {
-    bool result = false;
-    nob_log(INFO, "Writing line to fdout(%s): |"SV_Fmt"|", fdout_label, (int) length, message);
-    if (write(fdout, message, length) < 0) return_defer(false);
-    if (write(fdout, "\n", 1) < 0) return_defer(false);
-    result = true;
-defer:
-    if (!result) {
-        nob_log(ERROR, "Could not write to fdout(%s): %s", fdout_label, strerror(errno));
-    }
-    return result;
+    Nob_JSONRPC_Request_Handler request_handler = {0};
+    request_handler.ctx = ctx;
+    request_handler.params_parser = params_parser;
+    request_handler.method_handler = method_handler;
+    return request_handler;
 }
 
 void nob_jsonrpc__object_begin_with_jsonrpc_ver_and_id(Jim *jim, Nob_JSONRPC_Request_Parser request_parser) {
@@ -213,38 +173,37 @@ void nob_jsonrpc__object_begin_with_jsonrpc_ver_and_id(Jim *jim, Nob_JSONRPC_Req
     }
 }
 
-bool nob_jsonrpc_handle_request(Nob_JSONRPC_Session *session) {
+bool nob_jsonrpc_handle_request(
+    Nob_JSONRPC_Request_Handler *request_handler,
+    const char *json_line_label,
+    const char *json_line,
+    size_t json_line_count,
+    Jim *success,
+    Jim *failure) {
     char *error_message = NULL;
     Nob_JSONRPC_Error_Code error_code = NOB_JSONRPC_ERROR_CODE_SUCCESS;
 
-    session->sb.count = 0;
-    while (session->sb.count == 0) { // Busy loop to look for new line
-        if (!nob_br_read_line_to_sb(&session->buff, &session->sb)) return false;
-    }
-    nob_log(INFO, "Read line from fdin(%s): |"SV_Fmt"|", session->fdin_label, (int) session->sb.count, session->sb.items);
-    if (!nob_jsonrpc_parse_request(&session->request_parser, session->fdin_label, session->sb.items, session->sb.count, session->params_parser, session->ctx)) {
+    if (!nob_jsonrpc_parse_request(&request_handler->request_parser, json_line_label, json_line, json_line_count, request_handler->params_parser, request_handler->ctx)) {
         error_code = NOB_JSONRPC_ERROR_CODE_PARSE_ERROR;
     }
 
     // Initialize Success Jim
-    Jim *success = &session->success;
     jim_begin(success); // success_main
-    nob_jsonrpc__object_begin_with_jsonrpc_ver_and_id(success, session->request_parser);
+    nob_jsonrpc__object_begin_with_jsonrpc_ver_and_id(success, request_handler->request_parser);
         jim_member_key(success, "result");
     size_t success_sink_saved = success->sink_count;
 
     // Initialize Failure Jim
-    Jim *failure = &session->failure;
     jim_begin(failure); // failure_main
-    nob_jsonrpc__object_begin_with_jsonrpc_ver_and_id(failure, session->request_parser);
+    nob_jsonrpc__object_begin_with_jsonrpc_ver_and_id(failure, request_handler->request_parser);
         jim_member_key(failure, "error");
         jim_object_begin(failure);
             jim_member_key(failure, "data");
     size_t failure_sink_saved = failure->sink_count;
 
-    if (error_code == NOB_JSONRPC_ERROR_CODE_SUCCESS && session->method_handler != NULL) {
-        error_code = session->method_handler(
-            session->ctx, session->request_parser.method, session->params_parser.params, success, failure, &error_message);
+    if (error_code == NOB_JSONRPC_ERROR_CODE_SUCCESS && request_handler->method_handler != NULL) {
+        error_code = request_handler->method_handler(
+            request_handler->ctx, request_handler->request_parser.method, request_handler->params_parser.params, success, failure, &error_message);
     }
 
     if (error_code == NOB_JSONRPC_ERROR_CODE_NO_RESPONSE) return true;
@@ -261,7 +220,7 @@ bool nob_jsonrpc_handle_request(Nob_JSONRPC_Session *session) {
     if (error_code == NOB_JSONRPC_ERROR_CODE_SUCCESS) {
         // Success
         jim_object_end(success); // success_main
-        return nob_jsonrpc__write_line(session->fdout, session->fdout_label, success->sink, success->sink_count);
+        return true;
     } else {
         // Failure
         jim_member_key(failure, "code");
@@ -295,24 +254,13 @@ bool nob_jsonrpc_handle_request(Nob_JSONRPC_Session *session) {
 
         jim_object_end(failure); // error
         jim_object_end(failure); // failure_main
-        return nob_jsonrpc__write_line(session->fdout, session->fdout_label, failure->sink, failure->sink_count);
+        return false;
     }
 }
 
-void nob_free_jsonrpc_session(Nob_JSONRPC_Session *session) {
-    nob_free_jsonrpc_request_parser(&session->request_parser);
-
-    free(session->buff.items);
-
-    free(session->sb.items);
-
-    free(session->success.sink);
-    free(session->success.scopes);
-
-    free(session->failure.sink);
-    free(session->failure.scopes);
-
-    memset(session, 0, sizeof(Nob_JSONRPC_Session));
+void nob_free_jsonrpc_request_handler(Nob_JSONRPC_Request_Handler *request_handler) {
+    nob_free_jsonrpc_request_parser(&request_handler->request_parser);
+    memset(request_handler, 0, sizeof(Nob_JSONRPC_Request_Handler));
 }
 
 #endif // NOB_JSONRPC_IMPLEMENTATION_GAURD_
@@ -325,10 +273,10 @@ void nob_free_jsonrpc_session(Nob_JSONRPC_Session *session) {
         #define JSONRPC_Params_Parser                Nob_JSONRPC_Params_Parser
         #define jsonrpc_parse_request                nob_jsonrpc_parse_request
         #define free_jsonrpc_request_parser          nob_free_jsonrpc_request_parser
-        #define JSONRPC_Session                      Nob_JSONRPC_Session
+        #define JSONRPC_Request_Handler              Nob_JSONRPC_Request_Handler
         #define JSONRPC_Error_Code                   Nob_JSONRPC_Error_Code
         #define JSONRPC_Method_Handler               Nob_JSONRPC_Method_Handler
-        #define create_jsonrpc_session               nob_create_jsonrpc_session
+        #define create_jsonrpc_request_handler       nob_create_jsonrpc_request_handler
         #define jsonrpc_handle_request               nob_jsonrpc_handle_request
         #define JSONRPC_ERROR_CODE_SUCCESS           NOB_JSONRPC_ERROR_CODE_SUCCESS
         #define JSONRPC_ERROR_CODE_NO_RESPONSE       NOB_JSONRPC_ERROR_CODE_NO_RESPONSE
@@ -339,6 +287,6 @@ void nob_free_jsonrpc_session(Nob_JSONRPC_Session *session) {
         #define JSONRPC_ERROR_CODE_INTERNAL_ERROR    NOB_JSONRPC_ERROR_CODE_INTERNAL_ERROR
         #define JSONRPC_ERROR_CODE_SERVER_ERROR_MIN  NOB_JSONRPC_ERROR_CODE_SERVER_ERROR_MIN
         #define JSONRPC_ERROR_CODE_SERVER_ERROR_MAX  NOB_JSONRPC_ERROR_CODE_SERVER_ERROR_MAX
-        #define free_jsonrpc_session                 nob_free_jsonrpc_session
+        #define free_jsonrpc_request_handler         nob_free_jsonrpc_request_handler
     #endif // NOB_UNSTRIP_PREFIX
 #endif // NOB_JSONRPC_STRIP_PREFIX_GUARD_

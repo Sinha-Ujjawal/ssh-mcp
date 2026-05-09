@@ -29,22 +29,25 @@ typedef struct {
     size_t capacity;
 } Nob_MCP_Tools_List_Scopes;
 
-typedef struct Nob_MCP_Session Nob_MCP_Session;
+typedef struct Nob_MCP_Request_Handler Nob_MCP_Request_Handler;
 
-struct Nob_MCP_Session {
-    Nob_JSONRPC_Session jsonrpc_session;
+struct Nob_MCP_Request_Handler {
+    Nob_JSONRPC_Request_Handler jsonrpc_request_handler;
     const char *mcp_protocol_ver;
     const char *mcp_server_name;
     const char *mcp_server_ver;
     void *ctx;
     const char *instructions;
 
-    bool (*tools_list_clb)(Nob_MCP_Session *session); // tools/list callback
+    const char *json_line_label;
+    bool (*tools_list_clb)(Nob_MCP_Request_Handler *request_handler); // tools/list callback
     Nob_MCP_Tools_List_Scopes tools_list_scopes;
 
     Nob_String_View tool_name;
     Jimp tool_args;
-    bool (*tools_call_clb)(Nob_MCP_Session *session, Nob_String_View tool_name, Jimp *tool_args); // tools/call callback
+    bool (*tools_call_clb)(Nob_MCP_Request_Handler *request_handler, Nob_String_View tool_name, Jimp *tool_args); // tools/call callback
+
+    Jim *out;
 };
 
 typedef struct {
@@ -92,68 +95,72 @@ typedef struct {
     } constraints;
 } Nob_MCP_Tool_Param_Name_And_Desc_With_Constraints;
 
-Nob_MCP_Session nob_create_mcp_session(
-    int fdin, const char *fdin_label,
-    int fdout, const char *fdout_label,
+Nob_MCP_Request_Handler nob_create_mcp_request_handler(
     const char *mcp_server_name, const char *mcp_server_ver,
-    bool (*tools_list_clb)(Nob_MCP_Session *session), // tools/list callback
-    bool (*tools_call_clb)(Nob_MCP_Session *session, Nob_String_View tool_name, Jimp *tool_args), // tools/call callback
+    bool (*tools_list_clb)(Nob_MCP_Request_Handler *request_handler), // tools/list callback
+    bool (*tools_call_clb)(Nob_MCP_Request_Handler *request_handler, Nob_String_View tool_name, Jimp *tool_args), // tools/call callback
     void *ctx,
     const char *instructions);
-void nob_free_mcp_session(Nob_MCP_Session *session);
-bool nob_mcp_handle_request(Nob_MCP_Session *session);
+void nob_free_mcp_request_handler(Nob_MCP_Request_Handler *request_handler);
+bool nob_mcp_handle_request(
+    Nob_MCP_Request_Handler *request_handler,
+    const char *json_line_label,
+    const char *json_line,
+    size_t json_line_count,
+    Jim *success,
+    Jim *failure);
 
-#define nob_mcp_begin_tool(session, tool_name, ...) \
-    nob_mcp_begin_tool_impl((session), (Nob_MCP_Tool_Desc){.name=(tool_name), __VA_ARGS__}, __FILE__, __LINE__)
-void nob_mcp_begin_tool_impl(Nob_MCP_Session *session, Nob_MCP_Tool_Desc tool_desc, const char *file, size_t line_no);
-#define nob_mcp_end_tool(session) nob_mcp_end_tool_impl(session, __FILE__, __LINE__)
-void nob_mcp_end_tool_impl(Nob_MCP_Session *session, const char *file, size_t line_no);
+#define nob_mcp_begin_tool(request_handler, tool_name, ...) \
+    nob_mcp_begin_tool_impl((request_handler), (Nob_MCP_Tool_Desc){.name=(tool_name), __VA_ARGS__}, __FILE__, __LINE__)
+void nob_mcp_begin_tool_impl(Nob_MCP_Request_Handler *request_handler, Nob_MCP_Tool_Desc tool_desc, const char *file, size_t line_no);
+#define nob_mcp_end_tool(request_handler) nob_mcp_end_tool_impl(request_handler, __FILE__, __LINE__)
+void nob_mcp_end_tool_impl(Nob_MCP_Request_Handler *request_handler, const char *file, size_t line_no);
 
-#define nob_mcp_add_param(session, param_name, param_type, ...) \
-    nob_mcp_add_param_impl((session),                           \
+#define nob_mcp_add_param(request_handler, param_name, param_type, ...) \
+    nob_mcp_add_param_impl((request_handler),                           \
         (Nob_MCP_Tool_Param_Name_And_Desc_With_Constraints){.name=(param_name), .type=(param_type), __VA_ARGS__}, __FILE__, __LINE__)
-void nob_mcp_add_param_impl(Nob_MCP_Session *session, Nob_MCP_Tool_Param_Name_And_Desc_With_Constraints tool_param_desc, const char *file, size_t line_no);
+void nob_mcp_add_param_impl(Nob_MCP_Request_Handler *request_handler, Nob_MCP_Tool_Param_Name_And_Desc_With_Constraints tool_param_desc, const char *file, size_t line_no);
 
-#define nob_mcp_add_array_param(session, param_name, param_type, ...) \
-    nob_mcp_add_array_param_impl((session),                           \
+#define nob_mcp_add_array_param(request_handler, param_name, param_type, ...) \
+    nob_mcp_add_array_param_impl((request_handler),                           \
         (Nob_MCP_Tool_Param_Name_And_Desc_With_Constraints){.name=(param_name), .type=(param_type), __VA_ARGS__}, __FILE__, __LINE__)
-void nob_mcp_add_array_param_impl(Nob_MCP_Session *session, Nob_MCP_Tool_Param_Name_And_Desc_With_Constraints tool_param_desc, const char *file, size_t line_no);
+void nob_mcp_add_array_param_impl(Nob_MCP_Request_Handler *request_handler, Nob_MCP_Tool_Param_Name_And_Desc_With_Constraints tool_param_desc, const char *file, size_t line_no);
 
-#define nob_mcp_begin_array(session, ...) \
-    nob_mcp_begin_array_impl((session), (Nob_MCP_Tool_Param_Name_And_Desc){__VA_ARGS__}, __FILE__, __LINE__)
-void nob_mcp_begin_array_impl(Nob_MCP_Session *session, Nob_MCP_Tool_Param_Name_And_Desc tool_param_desc, const char *file, size_t line_no);
-#define nob_mcp_end_array(session) nob_mcp_end_array_impl(session, __FILE__, __LINE__)
-void nob_mcp_end_array_impl(Nob_MCP_Session *session, const char *file, size_t line_no);
+#define nob_mcp_begin_array(request_handler, ...) \
+    nob_mcp_begin_array_impl((request_handler), (Nob_MCP_Tool_Param_Name_And_Desc){__VA_ARGS__}, __FILE__, __LINE__)
+void nob_mcp_begin_array_impl(Nob_MCP_Request_Handler *request_handler, Nob_MCP_Tool_Param_Name_And_Desc tool_param_desc, const char *file, size_t line_no);
+#define nob_mcp_end_array(request_handler) nob_mcp_end_array_impl(request_handler, __FILE__, __LINE__)
+void nob_mcp_end_array_impl(Nob_MCP_Request_Handler *request_handler, const char *file, size_t line_no);
 
-#define nob_mcp_begin_array_param(session, param_name, ...) \
-    nob_mcp_begin_array_param_impl((session), (Nob_MCP_Tool_Param_Name_And_Desc){.name=(param_name), __VA_ARGS__}, __FILE__, __LINE__)
-void nob_mcp_begin_array_param_impl(Nob_MCP_Session *session, Nob_MCP_Tool_Param_Name_And_Desc tool_param_desc, const char *file, size_t line_no);
-#define nob_mcp_end_array_param(session) nob_mcp_end_array_param_impl(session, __FILE__, __LINE__)
-void nob_mcp_end_array_param_impl(Nob_MCP_Session *session, const char *file, size_t line_no);
+#define nob_mcp_begin_array_param(request_handler, param_name, ...) \
+    nob_mcp_begin_array_param_impl((request_handler), (Nob_MCP_Tool_Param_Name_And_Desc){.name=(param_name), __VA_ARGS__}, __FILE__, __LINE__)
+void nob_mcp_begin_array_param_impl(Nob_MCP_Request_Handler *request_handler, Nob_MCP_Tool_Param_Name_And_Desc tool_param_desc, const char *file, size_t line_no);
+#define nob_mcp_end_array_param(request_handler) nob_mcp_end_array_param_impl(request_handler, __FILE__, __LINE__)
+void nob_mcp_end_array_param_impl(Nob_MCP_Request_Handler *request_handler, const char *file, size_t line_no);
 
-#define nob_mcp_set_array_type(session, param_type, ...) \
-    nob_mcp_set_array_type_impl((session),               \
+#define nob_mcp_set_array_type(request_handler, param_type, ...) \
+    nob_mcp_set_array_type_impl((request_handler),               \
         (Nob_MCP_Tool_Param_Name_And_Desc_With_Constraints){.type=(param_type), __VA_ARGS__}, __FILE__, __LINE__)
-void nob_mcp_set_array_type_impl(Nob_MCP_Session *session, Nob_MCP_Tool_Param_Name_And_Desc_With_Constraints tool_param_desc, const char *file, size_t line_no);
+void nob_mcp_set_array_type_impl(Nob_MCP_Request_Handler *request_handler, Nob_MCP_Tool_Param_Name_And_Desc_With_Constraints tool_param_desc, const char *file, size_t line_no);
 
-#define nob_mcp_begin_object_param(session, param_name, ...) \
-    nob_mcp_begin_object_param_impl((session), (Nob_MCP_Tool_Param_Name_And_Desc){.name=(param_name), __VA_ARGS__}, __FILE__, __LINE__)
-void nob_mcp_begin_object_param_impl(Nob_MCP_Session *session, Nob_MCP_Tool_Param_Name_And_Desc tool_param_desc, const char *file, size_t line_no);
-#define nob_mcp_end_object_param(session) nob_mcp_end_object_param_impl(session, __FILE__, __LINE__)
-void nob_mcp_end_object_param_impl(Nob_MCP_Session *session, const char *file, size_t line_no);
+#define nob_mcp_begin_object_param(request_handler, param_name, ...) \
+    nob_mcp_begin_object_param_impl((request_handler), (Nob_MCP_Tool_Param_Name_And_Desc){.name=(param_name), __VA_ARGS__}, __FILE__, __LINE__)
+void nob_mcp_begin_object_param_impl(Nob_MCP_Request_Handler *request_handler, Nob_MCP_Tool_Param_Name_And_Desc tool_param_desc, const char *file, size_t line_no);
+#define nob_mcp_end_object_param(request_handler) nob_mcp_end_object_param_impl(request_handler, __FILE__, __LINE__)
+void nob_mcp_end_object_param_impl(Nob_MCP_Request_Handler *request_handler, const char *file, size_t line_no);
 
-void nob_mcp_write_text_content(Nob_MCP_Session *session, const char *text);
-void nob_mcp_write_text_content_sized(Nob_MCP_Session *session, const char *text, size_t text_len);
+void nob_mcp_write_text_content(Nob_MCP_Request_Handler *request_handler, const char *text);
+void nob_mcp_write_text_content_sized(Nob_MCP_Request_Handler *request_handler, const char *text, size_t text_len);
 
 #endif // NOB_MCP_H_
 
 #ifdef NOB_MCP_IMPLEMENTATION
 #ifndef NOB_MCP_IMPLEMENTATION_GAURD_
 
-bool nob_mcp__params_parser(void *mcp_session_ptr, Nob_String_View method, Jimp *jimp, void *params) {
+bool nob_mcp__params_parser(void *mcp_request_handler_ptr, Nob_String_View method, Jimp *jimp, void *params) {
     UNUSED(params);
-    assert(mcp_session_ptr != NULL);
-    Nob_MCP_Session *mcp_session = mcp_session_ptr;
+    assert(mcp_request_handler_ptr != NULL);
+    Nob_MCP_Request_Handler *mcp_request_handler = mcp_request_handler_ptr;
 
     if (nob_sv_eq(method, sv_from_cstr("tools/call"))) {
         if (!jimp_object_begin(jimp)) return false;
@@ -161,12 +168,12 @@ bool nob_mcp__params_parser(void *mcp_session_ptr, Nob_String_View method, Jimp 
             if (strcmp(jimp->string, "name") == 0) {
                 // tool_name
                 if (!jimp_string(jimp)) return false;
-                mcp_session->tool_name = jimp_string_as_sv(jimp);
+                mcp_request_handler->tool_name = jimp_string_as_sv(jimp);
             } else if (strcmp(jimp->string, "arguments") == 0) {
                 const char *tool_args_start = jimp->point;
                 if (!jimp_skip_member(jimp)) return false;
                 const char *tool_args_end = jimp->point;
-                jimp_begin(&mcp_session->tool_args, mcp_session->jsonrpc_session.fdin_label, tool_args_start, tool_args_end - tool_args_start);
+                jimp_begin(&mcp_request_handler->tool_args, mcp_request_handler->json_line_label, tool_args_start, tool_args_end - tool_args_start);
             } else {
                 if (!jimp_skip_member(jimp)) return false;
             }
@@ -177,18 +184,18 @@ bool nob_mcp__params_parser(void *mcp_session_ptr, Nob_String_View method, Jimp 
     return true;
 }
 
-Nob_JSONRPC_Error_Code nob_mcp__method_handler(void *mcp_session_ptr, Nob_String_View method, void *params, Jim *success, Jim *failure, char **error_message) {
+Nob_JSONRPC_Error_Code nob_mcp__method_handler(void *mcp_request_handler_ptr, Nob_String_View method, void *params, Jim *success, Jim *failure, char **error_message) {
     UNUSED(params);
     UNUSED(failure);
     UNUSED(error_message);
-    assert(mcp_session_ptr != NULL);
-    Nob_MCP_Session *mcp_session = mcp_session_ptr;
+    assert(mcp_request_handler_ptr != NULL);
+    Nob_MCP_Request_Handler *mcp_request_handler = mcp_request_handler_ptr;
 
     if (nob_sv_eq(method, sv_from_cstr("initialize"))) {
         jim_object_begin(success); {
             // protocolVersion
             jim_member_key(success, "protocolVersion");
-            jim_string(success, mcp_session->mcp_protocol_ver);
+            jim_string(success, mcp_request_handler->mcp_protocol_ver);
 
             // TODO: Not currently providing the tools in the capabilities. This is just to conform with MCP Protocol
             // Providing tools description and handling tool calls has to be handled seperately
@@ -206,17 +213,17 @@ Nob_JSONRPC_Error_Code nob_mcp__method_handler(void *mcp_session_ptr, Nob_String
             jim_object_begin(success); {
                 // name
                 jim_member_key(success, "name");
-                jim_string(success, mcp_session->mcp_server_name);
+                jim_string(success, mcp_request_handler->mcp_server_name);
 
                 // version
                 jim_member_key(success, "version");
-                jim_string(success, mcp_session->mcp_server_ver);
+                jim_string(success, mcp_request_handler->mcp_server_ver);
             } jim_object_end(success);
 
             // instructions
-            if (mcp_session->instructions != NULL) {
+            if (mcp_request_handler->instructions != NULL) {
                 jim_member_key(success, "instructions");
-                jim_string(success, mcp_session->instructions);
+                jim_string(success, mcp_request_handler->instructions);
             }
         } jim_object_end(success);
         return NOB_JSONRPC_ERROR_CODE_SUCCESS;
@@ -226,8 +233,8 @@ Nob_JSONRPC_Error_Code nob_mcp__method_handler(void *mcp_session_ptr, Nob_String
         jim_object_begin(success); {
             jim_member_key(success, "tools");
             jim_array_begin(success); {
-                if (mcp_session->tools_list_clb != NULL) {
-                    if (!mcp_session->tools_list_clb(mcp_session)) {
+                if (mcp_request_handler->tools_list_clb != NULL) {
+                    if (!mcp_request_handler->tools_list_clb(mcp_request_handler)) {
                         *error_message = "Error while generating tools/list. Please check if the tools/list is properly getting generated";
                         return NOB_JSONRPC_ERROR_CODE_INTERNAL_ERROR;
                     }
@@ -240,8 +247,11 @@ Nob_JSONRPC_Error_Code nob_mcp__method_handler(void *mcp_session_ptr, Nob_String
             bool is_error = false;
             jim_member_key(success, "content");
             jim_array_begin(success); {
-                if (mcp_session->tools_call_clb != NULL) {
-                    is_error = !mcp_session->tools_call_clb(mcp_session, mcp_session->tool_name, &mcp_session->tool_args);
+                if (mcp_request_handler->tools_call_clb != NULL) {
+                    is_error = !mcp_request_handler->tools_call_clb(mcp_request_handler, mcp_request_handler->tool_name, &mcp_request_handler->tool_args);
+                }
+                if (is_error) {
+                    nob_mcp_write_text_content(mcp_request_handler, "An error has occurred!");
                 }
             } jim_array_end(success);
             if (is_error) {
@@ -254,46 +264,56 @@ Nob_JSONRPC_Error_Code nob_mcp__method_handler(void *mcp_session_ptr, Nob_String
     return NOB_JSONRPC_ERROR_CODE_METHOD_NOT_FOUND;
 }
 
-Nob_MCP_Session nob_create_mcp_session(
-    int fdin, const char *fdin_label,
-    int fdout, const char *fdout_label,
+Nob_MCP_Request_Handler nob_create_mcp_request_handler(
     const char *mcp_server_name, const char *mcp_server_ver,
-    bool (*tools_list_clb)(Nob_MCP_Session *session), // tools/list callback
-    bool (*tools_call_clb)(Nob_MCP_Session *session, Nob_String_View tool_name, Jimp *tool_args), // tools/call callback
+    bool (*tools_list_clb)(Nob_MCP_Request_Handler *request_handler), // tools/list callback
+    bool (*tools_call_clb)(Nob_MCP_Request_Handler *request_handler, Nob_String_View tool_name, Jimp *tool_args), // tools/call callback
     void *ctx,
     const char *instructions) {
-    Nob_MCP_Session session = {0};
+    Nob_MCP_Request_Handler request_handler = {0};
 
     Nob_JSONRPC_Params_Parser params_parser = {.params=NULL, .parse_clb=nob_mcp__params_parser};
-    session.jsonrpc_session = nob_create_jsonrpc_session(
-        fdin, fdin_label,
-        fdout, fdout_label,
+    request_handler.jsonrpc_request_handler = nob_create_jsonrpc_request_handler(
         params_parser,
         nob_mcp__method_handler,
         NULL);
-    session.mcp_protocol_ver = NOB_MCP_DEFAULT_PROTOCOL_VER;
-    session.mcp_server_name = mcp_server_name;
-    session.mcp_server_ver = mcp_server_ver;
-    session.tools_list_clb = tools_list_clb;
-    session.tools_call_clb = tools_call_clb;
-    session.ctx = ctx;
-    session.instructions = instructions;
-    return session;
+    request_handler.mcp_protocol_ver = NOB_MCP_DEFAULT_PROTOCOL_VER;
+    request_handler.mcp_server_name = mcp_server_name;
+    request_handler.mcp_server_ver = mcp_server_ver;
+    request_handler.tools_list_clb = tools_list_clb;
+    request_handler.tools_call_clb = tools_call_clb;
+    request_handler.ctx = ctx;
+    request_handler.instructions = instructions;
+    return request_handler;
 }
 
-void nob_free_mcp_session(Nob_MCP_Session *session) {
-    nob_free_jsonrpc_session(&session->jsonrpc_session);
-    free(session->tools_list_scopes.items);
-    free(session->tool_args.string);
-    memset(session, 0, sizeof(Nob_MCP_Session));
+void nob_free_mcp_request_handler(Nob_MCP_Request_Handler *request_handler) {
+    nob_free_jsonrpc_request_handler(&request_handler->jsonrpc_request_handler);
+    free(request_handler->tools_list_scopes.items);
+    free(request_handler->tool_args.string);
+    memset(request_handler, 0, sizeof(Nob_MCP_Request_Handler));
 }
 
-bool nob_mcp_handle_request(Nob_MCP_Session *session) {
-    // Setting the jsonrpc_session ctx here so that the callbacks
+bool nob_mcp_handle_request(
+    Nob_MCP_Request_Handler *request_handler,
+    const char *json_line_label,
+    const char *json_line,
+    size_t json_line_count,
+    Jim *success,
+    Jim *failure) {
+    // Setting the jsonrpc_request_handler ctx here so that the callbacks
     // nob_mcp__params_parser and nob_mcp__method_handler have
     // access to it
-    session->jsonrpc_session.ctx = session;
-    return nob_jsonrpc_handle_request(&session->jsonrpc_session);
+    request_handler->json_line_label             = json_line_label;
+    request_handler->out                         = success;
+    request_handler->jsonrpc_request_handler.ctx = request_handler;
+    return nob_jsonrpc_handle_request(
+        &request_handler->jsonrpc_request_handler,
+        json_line_label,
+        json_line,
+        json_line_count,
+        success,
+        failure);
 }
 
 const char *nob_mcp__tools_list_scope_to_cstr(Nob_MCP_Tools_List_Scope scope) {
@@ -308,15 +328,15 @@ const char *nob_mcp__tools_list_scope_to_cstr(Nob_MCP_Tools_List_Scope scope) {
     }
 }
 
-void nob_mcp__print_tools_list_scopes(Nob_MCP_Session session) {
+void nob_mcp__print_tools_list_scopes(Nob_MCP_Request_Handler request_handler) {
     nob_log(ERROR, "Tools List Scopes Content:");
-    da_foreach(Nob_MCP_Tools_List_Scope, it, &session.tools_list_scopes) {
+    da_foreach(Nob_MCP_Tools_List_Scope, it, &request_handler.tools_list_scopes) {
         nob_log(ERROR, "  %s", nob_mcp__tools_list_scope_to_cstr(*it));
     }
 }
 
-void nob_mcp__assert_tool_list_scope(Nob_MCP_Session session, Nob_MCP_Tools_List_Scope expected, const char *file, size_t line_no) {
-    Nob_MCP_Tools_List_Scope last = da_last(&session.tools_list_scopes);
+void nob_mcp__assert_tool_list_scope(Nob_MCP_Request_Handler request_handler, Nob_MCP_Tools_List_Scope expected, const char *file, size_t line_no) {
+    Nob_MCP_Tools_List_Scope last = da_last(&request_handler.tools_list_scopes);
     if ((last & expected) == 0) {
         fprintf(stderr, "ERROR: %s:%zu Expected tools_list scope: ", file, line_no);
         size_t count = 0;
@@ -330,18 +350,18 @@ void nob_mcp__assert_tool_list_scope(Nob_MCP_Session session, Nob_MCP_Tools_List
             }
         }
         fprintf(stderr, ", got: %s\n", nob_mcp__tools_list_scope_to_cstr(last));
-        nob_mcp__print_tools_list_scopes(session);
+        nob_mcp__print_tools_list_scopes(request_handler);
         assert(false);
     }
 }
 
-void nob_mcp_begin_tool_impl(Nob_MCP_Session *session, Nob_MCP_Tool_Desc tool_desc, const char *file, size_t line_no) {
-    if (session->tools_list_scopes.count != 0) {
+void nob_mcp_begin_tool_impl(Nob_MCP_Request_Handler *request_handler, Nob_MCP_Tool_Desc tool_desc, const char *file, size_t line_no) {
+    if (request_handler->tools_list_scopes.count != 0) {
         nob_log(ERROR, "%s:%zu tools_list_scopes must be empty to define a new tool", file, line_no);
-        nob_mcp__print_tools_list_scopes(*session);
+        nob_mcp__print_tools_list_scopes(*request_handler);
         assert(false);
     }
-    Jim *jim = &session->jsonrpc_session.success;
+    Jim *jim = request_handler->out;
     jim_object_begin(jim);
         // name
         assert(tool_desc.name != NULL);
@@ -364,16 +384,16 @@ void nob_mcp_begin_tool_impl(Nob_MCP_Session *session, Nob_MCP_Tool_Desc tool_de
             // properties
             jim_member_key(jim, "properties");
             jim_object_begin(jim);
-    da_append(&session->tools_list_scopes, NOB_MCP_SCOPE_TOOL);
+    da_append(&request_handler->tools_list_scopes, NOB_MCP_SCOPE_TOOL);
 }
 
-void nob_mcp_end_tool_impl(Nob_MCP_Session *session, const char *file, size_t line_no) {
-    nob_mcp__assert_tool_list_scope(*session, NOB_MCP_SCOPE_TOOL, file, line_no);
-    Jim *jim = &session->jsonrpc_session.success;
+void nob_mcp_end_tool_impl(Nob_MCP_Request_Handler *request_handler, const char *file, size_t line_no) {
+    nob_mcp__assert_tool_list_scope(*request_handler, NOB_MCP_SCOPE_TOOL, file, line_no);
+    Jim *jim = request_handler->out;
             jim_object_end(jim);
         jim_object_end(jim);
     jim_object_end(jim);
-    UNUSED(da_pop(&session->tools_list_scopes));
+    UNUSED(da_pop(&request_handler->tools_list_scopes));
 }
 
 void nob_mcp__type_and_constraints(Jim *jim, Nob_MCP_Tool_Param_Name_And_Desc_With_Constraints tool_param_desc) {
@@ -447,12 +467,12 @@ void nob_mcp__type_and_constraints(Jim *jim, Nob_MCP_Tool_Param_Name_And_Desc_Wi
     }
 }
 
-void nob_mcp_add_param_impl(Nob_MCP_Session *session, Nob_MCP_Tool_Param_Name_And_Desc_With_Constraints tool_param_desc, const char *file, size_t line_no) {
+void nob_mcp_add_param_impl(Nob_MCP_Request_Handler *request_handler, Nob_MCP_Tool_Param_Name_And_Desc_With_Constraints tool_param_desc, const char *file, size_t line_no) {
     nob_mcp__assert_tool_list_scope(
-        *session,
+        *request_handler,
         NOB_MCP_SCOPE_TOOL | NOB_MCP_SCOPE_OBJECT,
         file, line_no);
-    Jim *jim = &session->jsonrpc_session.success;
+    Jim *jim = request_handler->out;
     assert(tool_param_desc.name != NULL);
     jim_member_key(jim, tool_param_desc.name);
     jim_object_begin(jim); {
@@ -468,13 +488,13 @@ void nob_mcp_add_param_impl(Nob_MCP_Session *session, Nob_MCP_Tool_Param_Name_An
 }
 
 void nob_mcp_add_array_param_impl(
-    Nob_MCP_Session *session, Nob_MCP_Tool_Param_Name_And_Desc_With_Constraints tool_param_desc, const char *file, size_t line_no) {
+    Nob_MCP_Request_Handler *request_handler, Nob_MCP_Tool_Param_Name_And_Desc_With_Constraints tool_param_desc, const char *file, size_t line_no) {
     nob_mcp__assert_tool_list_scope(
-        *session,
+        *request_handler,
         NOB_MCP_SCOPE_TOOL | NOB_MCP_SCOPE_ARRAY | NOB_MCP_SCOPE_OBJECT,
         file, line_no);
-    Jim *jim = &session->jsonrpc_session.success;
-    if (da_last(&session->tools_list_scopes) == NOB_MCP_SCOPE_ARRAY) {
+    Jim *jim = request_handler->out;
+    if (da_last(&request_handler->tools_list_scopes) == NOB_MCP_SCOPE_ARRAY) {
         // type
         jim_member_key(jim, "type");
         jim_string(jim, "object");
@@ -502,17 +522,17 @@ void nob_mcp_add_array_param_impl(
             nob_mcp__type_and_constraints(jim, tool_param_desc);
         } jim_object_end(jim);
     } jim_object_end(jim);
-    if (da_last(&session->tools_list_scopes) == NOB_MCP_SCOPE_ARRAY) {
+    if (da_last(&request_handler->tools_list_scopes) == NOB_MCP_SCOPE_ARRAY) {
         jim_object_end(jim);
     }
 }
 
-void nob_mcp_begin_array_impl(Nob_MCP_Session *session, Nob_MCP_Tool_Param_Name_And_Desc tool_param_desc, const char *file, size_t line_no) {
+void nob_mcp_begin_array_impl(Nob_MCP_Request_Handler *request_handler, Nob_MCP_Tool_Param_Name_And_Desc tool_param_desc, const char *file, size_t line_no) {
     nob_mcp__assert_tool_list_scope(
-        *session,
+        *request_handler,
         NOB_MCP_SCOPE_ARRAY,
         file, line_no);
-    Jim *jim = &session->jsonrpc_session.success;
+    Jim *jim = request_handler->out;
     if (tool_param_desc.desc != NULL) {
         // description
         jim_member_key(jim, "description");
@@ -526,33 +546,33 @@ void nob_mcp_begin_array_impl(Nob_MCP_Session *session, Nob_MCP_Tool_Param_Name_
     jim_member_key(jim, "items");
     jim_object_begin(jim);
 
-    da_append(&session->tools_list_scopes, NOB_MCP_SCOPE_ARRAY);
+    da_append(&request_handler->tools_list_scopes, NOB_MCP_SCOPE_ARRAY);
 }
 
-void nob_mcp_end_array_impl(Nob_MCP_Session *session, const char *file, size_t line_no) {
+void nob_mcp_end_array_impl(Nob_MCP_Request_Handler *request_handler, const char *file, size_t line_no) {
     nob_mcp__assert_tool_list_scope(
-        *session,
+        *request_handler,
         NOB_MCP_SCOPE_ARRAY | NOB_MCP_SCOPE_SET_ARRAY_TYPE,
         file, line_no);
-    if (da_last(&session->tools_list_scopes) == NOB_MCP_SCOPE_SET_ARRAY_TYPE) {
-        UNUSED(da_pop(&session->tools_list_scopes));
+    if (da_last(&request_handler->tools_list_scopes) == NOB_MCP_SCOPE_SET_ARRAY_TYPE) {
+        UNUSED(da_pop(&request_handler->tools_list_scopes));
         nob_mcp__assert_tool_list_scope(
-            *session,
+            *request_handler,
             NOB_MCP_SCOPE_ARRAY,
             file, line_no);
     }
-    Jim *jim = &session->jsonrpc_session.success;
+    Jim *jim = request_handler->out;
     jim_object_end(jim);
-    UNUSED(da_pop(&session->tools_list_scopes));
+    UNUSED(da_pop(&request_handler->tools_list_scopes));
 }
 
-void nob_mcp_begin_array_param_impl(Nob_MCP_Session *session, Nob_MCP_Tool_Param_Name_And_Desc tool_param_desc, const char *file, size_t line_no) {
+void nob_mcp_begin_array_param_impl(Nob_MCP_Request_Handler *request_handler, Nob_MCP_Tool_Param_Name_And_Desc tool_param_desc, const char *file, size_t line_no) {
     nob_mcp__assert_tool_list_scope(
-        *session,
+        *request_handler,
         NOB_MCP_SCOPE_TOOL | NOB_MCP_SCOPE_ARRAY | NOB_MCP_SCOPE_OBJECT,
         file, line_no);
-    Jim *jim = &session->jsonrpc_session.success;
-    if (da_last(&session->tools_list_scopes) == NOB_MCP_SCOPE_ARRAY) {
+    Jim *jim = request_handler->out;
+    if (da_last(&request_handler->tools_list_scopes) == NOB_MCP_SCOPE_ARRAY) {
         // type
         jim_member_key(jim, "type");
         jim_string(jim, "object");
@@ -577,36 +597,36 @@ void nob_mcp_begin_array_param_impl(Nob_MCP_Session *session, Nob_MCP_Tool_Param
         jim_member_key(jim, "items");
         jim_object_begin(jim);
 
-    da_append(&session->tools_list_scopes, NOB_MCP_SCOPE_ARRAY);
+    da_append(&request_handler->tools_list_scopes, NOB_MCP_SCOPE_ARRAY);
 }
 
-void nob_mcp_end_array_param_impl(Nob_MCP_Session *session, const char *file, size_t line_no) {
+void nob_mcp_end_array_param_impl(Nob_MCP_Request_Handler *request_handler, const char *file, size_t line_no) {
     nob_mcp__assert_tool_list_scope(
-        *session,
+        *request_handler,
         NOB_MCP_SCOPE_ARRAY | NOB_MCP_SCOPE_SET_ARRAY_TYPE,
         file, line_no);
-    if (da_last(&session->tools_list_scopes) == NOB_MCP_SCOPE_SET_ARRAY_TYPE) {
-        UNUSED(da_pop(&session->tools_list_scopes));
+    if (da_last(&request_handler->tools_list_scopes) == NOB_MCP_SCOPE_SET_ARRAY_TYPE) {
+        UNUSED(da_pop(&request_handler->tools_list_scopes));
         nob_mcp__assert_tool_list_scope(
-            *session,
+            *request_handler,
             NOB_MCP_SCOPE_ARRAY,
             file, line_no);
     }
-    Jim *jim = &session->jsonrpc_session.success;
+    Jim *jim = request_handler->out;
         jim_object_end(jim);
     jim_object_end(jim);
-    UNUSED(da_pop(&session->tools_list_scopes));
-    if (da_last(&session->tools_list_scopes) == NOB_MCP_SCOPE_ARRAY) {
+    UNUSED(da_pop(&request_handler->tools_list_scopes));
+    if (da_last(&request_handler->tools_list_scopes) == NOB_MCP_SCOPE_ARRAY) {
         jim_object_end(jim);
     }
 }
 
-void nob_mcp_set_array_type_impl(Nob_MCP_Session *session, Nob_MCP_Tool_Param_Name_And_Desc_With_Constraints tool_param_desc, const char *file, size_t line_no) {
+void nob_mcp_set_array_type_impl(Nob_MCP_Request_Handler *request_handler, Nob_MCP_Tool_Param_Name_And_Desc_With_Constraints tool_param_desc, const char *file, size_t line_no) {
     nob_mcp__assert_tool_list_scope(
-        *session,
+        *request_handler,
         NOB_MCP_SCOPE_ARRAY,
         file, line_no);
-    Jim *jim = &session->jsonrpc_session.success;
+    Jim *jim = request_handler->out;
     if (tool_param_desc.desc != NULL) {
         // description
         jim_member_key(jim, "description");
@@ -616,16 +636,16 @@ void nob_mcp_set_array_type_impl(Nob_MCP_Session *session, Nob_MCP_Tool_Param_Na
     // type and constraints
     nob_mcp__type_and_constraints(jim, tool_param_desc);
 
-    da_append(&session->tools_list_scopes, NOB_MCP_SCOPE_SET_ARRAY_TYPE);
+    da_append(&request_handler->tools_list_scopes, NOB_MCP_SCOPE_SET_ARRAY_TYPE);
 }
 
-void nob_mcp_begin_object_param_impl(Nob_MCP_Session *session, Nob_MCP_Tool_Param_Name_And_Desc tool_param_desc, const char *file, size_t line_no) {
+void nob_mcp_begin_object_param_impl(Nob_MCP_Request_Handler *request_handler, Nob_MCP_Tool_Param_Name_And_Desc tool_param_desc, const char *file, size_t line_no) {
     nob_mcp__assert_tool_list_scope(
-        *session,
+        *request_handler,
          NOB_MCP_SCOPE_TOOL | NOB_MCP_SCOPE_ARRAY | NOB_MCP_SCOPE_OBJECT,
          file, line_no);
-    Jim *jim = &session->jsonrpc_session.success;
-    if (da_last(&session->tools_list_scopes) == NOB_MCP_SCOPE_ARRAY) {
+    Jim *jim = request_handler->out;
+    if (da_last(&request_handler->tools_list_scopes) == NOB_MCP_SCOPE_ARRAY) {
         // type
         jim_member_key(jim, "type");
         jim_string(jim, "object");
@@ -650,22 +670,22 @@ void nob_mcp_begin_object_param_impl(Nob_MCP_Session *session, Nob_MCP_Tool_Para
         jim_member_key(jim, "properties");
         jim_object_begin(jim);
 
-    da_append(&session->tools_list_scopes, NOB_MCP_SCOPE_OBJECT);
+    da_append(&request_handler->tools_list_scopes, NOB_MCP_SCOPE_OBJECT);
 }
 
-void nob_mcp_end_object_param_impl(Nob_MCP_Session *session, const char *file, size_t line_no) {
-    nob_mcp__assert_tool_list_scope(*session, NOB_MCP_SCOPE_OBJECT, file, line_no);
-    Jim *jim = &session->jsonrpc_session.success;
+void nob_mcp_end_object_param_impl(Nob_MCP_Request_Handler *request_handler, const char *file, size_t line_no) {
+    nob_mcp__assert_tool_list_scope(*request_handler, NOB_MCP_SCOPE_OBJECT, file, line_no);
+    Jim *jim = request_handler->out;
         jim_object_end(jim);
     jim_object_end(jim);
-    UNUSED(da_pop(&session->tools_list_scopes));
-    if (da_last(&session->tools_list_scopes) == NOB_MCP_SCOPE_ARRAY) {
+    UNUSED(da_pop(&request_handler->tools_list_scopes));
+    if (da_last(&request_handler->tools_list_scopes) == NOB_MCP_SCOPE_ARRAY) {
         jim_object_end(jim);
     }
 }
 
-void nob_mcp_write_text_content(Nob_MCP_Session *session, const char *text) {
-    Jim *jim = &session->jsonrpc_session.success;
+void nob_mcp_write_text_content(Nob_MCP_Request_Handler *request_handler, const char *text) {
+    Jim *jim = request_handler->out;
     jim_object_begin(jim); {
         jim_member_key(jim, "type");
         jim_string(jim, "text");
@@ -675,8 +695,8 @@ void nob_mcp_write_text_content(Nob_MCP_Session *session, const char *text) {
     } jim_object_end(jim);
 }
 
-void nob_mcp_write_text_content_sized(Nob_MCP_Session *session, const char *text, size_t text_len) {
-    Jim *jim = &session->jsonrpc_session.success;
+void nob_mcp_write_text_content_sized(Nob_MCP_Request_Handler *request_handler, const char *text, size_t text_len) {
+    Jim *jim = request_handler->out;
     jim_object_begin(jim); {
         jim_member_key(jim, "type");
         jim_string(jim, "text");
@@ -692,9 +712,9 @@ void nob_mcp_write_text_content_sized(Nob_MCP_Session *session, const char *text
 #ifndef NOB_MCP_STRIP_PREFIX_GUARD_
 #define NOB_MCP_STRIP_PREFIX_GUARD_
     #ifndef NOB_UNSTRIP_PREFIX
-        #define MCP_Session                  Nob_MCP_Session
-        #define create_mcp_session           nob_create_mcp_session
-        #define free_mcp_session             nob_free_mcp_session
+        #define MCP_Request_Handler          Nob_MCP_Request_Handler
+        #define create_mcp_request_handler   nob_create_mcp_request_handler
+        #define free_mcp_request_handler     nob_free_mcp_request_handler
         #define mcp_handle_request           nob_mcp_handle_request
         #define mcp_begin_tool               nob_mcp_begin_tool
         #define mcp_end_tool                 nob_mcp_end_tool

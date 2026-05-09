@@ -1,0 +1,20 @@
+services:
+  openssh-server:
+    image: linuxserver/openssh-server:latest
+    container_name: ssh-server
+    hostname: linux-box
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      - PASSWORD_ACCESS=true
+      - USER_PASSWORD=password # Set your password here
+      - USER_NAME=usinha     # Set your username here
+    volumes:
+      - ssh_config:/config
+    ports:
+      - "2222:2222"
+    restart: unless-stopped
+
+volumes:
+  ssh_config:
