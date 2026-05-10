@@ -19,8 +19,12 @@
 #include "nob_mcp.h"
 #include "nob_fixed_deque.h"
 #include "nob_channels.h"
+#include "nob_hash.h"
+#include "nob_ht.h"
 
 #define DEFAULT_SSH_PORT 2222
+#define MAX_SSH_USER 32
+#define MAX_SSH_HOST 256
 
 #define DEFAULT_SSH_MASTER_CONNECTION_PARAMS  \
     "-o", "ControlMaster=yes"                 \
@@ -30,6 +34,50 @@
 
 #define TOOL_SSH_CONNECT          "ssh_connect"
 #define TOOL_SSH_LIST_CONNECTIONS "ssh_list_connections"
+
+#define CONNECTION_ID_LEN 4
+typedef struct {
+    unsigned char id[CONNECTION_ID_LEN];
+    char hex[(CONNECTION_ID_LEN << 1) + 1];
+} Connection_Id;
+
+typedef struct {
+    char user[MAX_SSH_USER];
+    char host[MAX_SSH_HOST];
+    size_t port;
+} Connection_Detail;
+
+typedef struct {
+    embed_ht_kv_slot(Connection_Id, Connection_Detail);
+} Connection_Ht_Slot;
+
+typedef struct {
+    embed_ht_with_slot(Connection_Ht_Slot);
+    pthread_mutex_t lock;
+} Connection_Ht;
+
+typedef struct {
+    String_Builder sb;
+    Cmd cmd;
+    const char *ssh_master_root;
+    Connection_Ht *ht;
+} My_Context;
+
+typedef struct {
+    const char *label;
+    String_View sv;
+} Line;
+
+typedef embed_channel(Line, 64) Line_Chan;
+typedef embed_channel(Jim, 64) Jim_Chan;
+
+typedef struct {
+    Line_Chan *in;
+    Jim_Chan *out;
+    const char *instructions;
+    const char *ssh_master_root;
+    Connection_Ht *ht;
+} MCP_Args;
 
 bool set_env_if_missing(const char *name, const char *value) {
     // Check if the variable exists
@@ -72,17 +120,12 @@ bool tools_list_clb(MCP_Request_Handler *request_handler) {
     return true;
 }
 
-typedef struct {
-    String_Builder sb;
-    Cmd cmd;
-    const char *ssh_master_root;
-} My_Context;
+#define hash_connection_id(c) \
+    hash_bytes(c.id, CONNECTION_ID_LEN)
 
-#define CONNECTION_ID_LEN 4
-typedef struct {
-    unsigned char id[CONNECTION_ID_LEN];
-    char hex[(CONNECTION_ID_LEN << 1) + 1];
-} Connection_Id;
+bool is_connection_id_equal(Connection_Id id1, Connection_Id id2) {
+    return memcmp(id1.id, id2.id, CONNECTION_ID_LEN);
+}
 
 bool create_new_connection_id(Connection_Id *connection_id) {
     int res = RAND_bytes(connection_id->id, ARRAY_LEN(connection_id->id));
@@ -92,6 +135,47 @@ bool create_new_connection_id(Connection_Id *connection_id) {
     }
     connection_id->hex[ARRAY_LEN(connection_id->hex) - 1] = '\0';
     return true;
+}
+
+void put_connection_detail(Connection_Ht *ht, Connection_Id id, Connection_Detail detail) {
+    pthread_mutex_lock(&ht->lock);
+    ssize_t out = HT_NOT_FOUND;
+    ht_insert_key(ht, hash_connection_id, is_connection_id_equal, id, &out);
+    assert(out != (ssize_t) HT_NOT_FOUND);
+    ht->items[out].value = detail;
+    pthread_mutex_unlock(&ht->lock);
+}
+
+bool get_connection_detail(Connection_Ht *ht, Connection_Id id, Connection_Detail *detail) {
+    bool result = false;
+    pthread_mutex_lock(&ht->lock);
+
+    ssize_t out = HT_NOT_FOUND;
+    ht_get_key(ht, hash_connection_id, is_connection_id_equal, id, &out);
+    if (out != (ssize_t) HT_NOT_FOUND) {
+        *detail = ht->items[out].value;
+        return_defer(true);
+    }
+
+defer:
+    pthread_mutex_unlock(&ht->lock);
+    return result;
+}
+
+bool delete_connection_detail(Connection_Ht *ht, Connection_Id id, Connection_Detail *detail) {
+    bool result = false;
+    pthread_mutex_lock(&ht->lock);
+
+    Connection_Ht_Slot *ptr = NULL;
+    ht_delete_key(ht, hash_connection_id, is_connection_id_equal, id, ptr);
+    if (ptr != NULL) {
+        *detail = ptr->value;
+        return_defer(true);
+    }
+
+defer:
+    pthread_mutex_unlock(&ht->lock);
+    return result;
 }
 
 bool handle_ssh_connect(MCP_Request_Handler *request_handler, My_Context *ctx, Jimp *tool_args) {
@@ -120,6 +204,15 @@ bool handle_ssh_connect(MCP_Request_Handler *request_handler, My_Context *ctx, J
     }
     if (!user.data) {
         mcp_write_text_content(request_handler, "Username not provided!");
+        return false;
+    }
+
+    if (host.count > MAX_SSH_HOST) {
+        size_t start_count = ctx->sb.count;
+        sb_appendf(&ctx->sb, "Hostname cannot be more than %d bytes!", MAX_SSH_HOST);
+        size_t end_count = ctx->sb.count;
+        mcp_write_text_content_sized(request_handler, ctx->sb.items + start_count, end_count - start_count);
+        ctx->sb.count -= end_count - start_count;
         return false;
     }
 
@@ -179,6 +272,11 @@ bool handle_ssh_connect(MCP_Request_Handler *request_handler, My_Context *ctx, J
         size_t end_count = ctx->sb.count;
         mcp_write_text_content_sized(request_handler, ctx->sb.items + start_count, end_count - start_count);
         ctx->sb.items -= end_count - start_count;
+        Connection_Detail connection_detail = {0};
+        snprintf(connection_detail.host, ARRAY_LEN(connection_detail.host), SV_Fmt, SV_Arg(host));
+        snprintf(connection_detail.user, ARRAY_LEN(connection_detail.user), SV_Fmt, SV_Arg(user));
+        connection_detail.port = port;
+        put_connection_detail(ctx->ht, connection_id, connection_detail);
         return true;
     } else {
         size_t start_count = ctx->sb.count;
@@ -192,36 +290,22 @@ bool handle_ssh_connect(MCP_Request_Handler *request_handler, My_Context *ctx, J
     }
 }
 
-bool collect_connection_ids(Walk_Entry entry) {
-    if (entry.level == 1) {
-        My_Context *ctx = entry.data;
-        assert(ctx != NULL);
-        String_View sv = sv_from_cstr(entry.path);
-        assert(sv_chop_prefix(&sv, sv_from_cstr(ctx->ssh_master_root)));
-        sv_chop_prefix(&sv, sv_from_cstr("/"));
-        // nob_log(INFO, "File: |"SV_Fmt"|", SV_Arg(sv));
-        if (sv_starts_with(sv, sv_from_cstr("master-"))) {
-            sv_chop_prefix(&sv, sv_from_cstr("master-"));
-            sb_appendf(&ctx->sb, "\n"SV_Fmt, SV_Arg(sv));
-        }
-    }
-    if (entry.level > 1) {
-        *entry.action = WALK_SKIP;
-    }
-    return true;
-}
-
 bool handle_ssh_list_connections(MCP_Request_Handler *request_handler, My_Context *ctx) {
     assert(ctx != NULL);
     sb_append_cstr(&ctx->sb, "Below are the list of connection ids:");
-    walk_dir(ctx->ssh_master_root, collect_connection_ids, .data = ctx);
-    mcp_write_text_content_sized(request_handler, ctx->sb.items, ctx->sb.count);
+    pthread_mutex_lock(&ctx->ht->lock);
+    ht_foreach(Connection_Ht_Slot, it, ctx->ht) {
+        mcp_write_text_content(request_handler, it->key.hex);
+    }
+    pthread_mutex_unlock(&ctx->ht->lock);
     return true;
 }
 
 bool tools_call_clb(MCP_Request_Handler *request_handler, String_View tool_name, Jimp *tool_args) {
     My_Context *ctx = request_handler->ctx;
     assert(ctx != NULL);
+
+    assert(ctx->ht != NULL);
 
     ctx->sb.count = 0; // Cleanup String_Builder
     ctx->cmd.count = 0; // Cleanup CMD
@@ -241,25 +325,11 @@ bool tools_call_clb(MCP_Request_Handler *request_handler, String_View tool_name,
     return false;
 }
 
-typedef struct {
-    const char *label;
-    String_View sv;
-} Line;
-
-typedef embed_channel(Line, 64) Line_Chan;
-typedef embed_channel(Jim, 64) Jim_Chan;
-
-typedef struct {
-    Line_Chan *in;
-    Jim_Chan *out;
-    const char *instructions;
-    const char *ssh_master_root;
-} MCP_Args;
-
 void *thread_mcp(void *arg) {
     MCP_Args *mcp_args = arg;
     My_Context ctx = {0};
     ctx.ssh_master_root = mcp_args->ssh_master_root;
+    ctx.ht = mcp_args->ht;
     MCP_Request_Handler request_handler = create_mcp_request_handler(
         "ssh", "0.0.1",
         tools_list_clb,
@@ -351,12 +421,15 @@ int main(int argc, char **argv) {
     Jim_Chan mcp_response_chan = {0};
     Buffered_Reader br = create_br(STDIN_FILENO);
     String_Builder sb = {0};
+    Connection_Ht ht = {0};
+    pthread_mutex_init(&ht.lock, NULL);
 
     pthread_t mcp_threads[10];
     MCP_Args mcp_args = {
         .in = &line_chan,
         .out = &mcp_response_chan,
         .ssh_master_root = ssh_master_root,
+        .ht = &ht,
     };
     for (size_t i = 0; i < ARRAY_LEN(mcp_threads); i++) {
         pthread_create(&mcp_threads[i], NULL, thread_mcp, &mcp_args);
@@ -386,5 +459,6 @@ int main(int argc, char **argv) {
 
     free(br.items);
     free(sb.items);
+    free(ht.items);
     return 0;
 }
