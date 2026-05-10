@@ -1,9 +1,24 @@
 # ssh-mcp
-A simple MCP Server Implementation for managing SSH connections in C.
+A simple MCP Server Implementation for managing SSH connections in C. This is a simple `stdin` and `stdout` MCP server and is meant to be used by running locally on a desktop OS.
 
 **NOTE: This is WIP...**
+**NOTE: Also note that currently it supports POSIX only**
 
-Current Tools List:
+## Dependencies:
+- [libssl-dev](https://packages.debian.org/sid/libssl-dev)
+- [Zenity](https://en.wikipedia.org/wiki/Zenity)
+
+## Build:
+```console
+cc -o nob nob.c && ./nob
+```
+
+## Usage:
+```console
+./build/ssh-mcp
+```
+
+## Current Tools List:
 
 | Tool Name | Description |
 | :--- | :--- |
