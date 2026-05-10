@@ -33,17 +33,17 @@
   , "-fN"
 
 #define TOOL_SSH_CONNECT          "ssh_connect"
+#define TOOL_SSH_EXECUTE          "ssh_execute"
 #define TOOL_SSH_LIST_CONNECTIONS "ssh_list_connections"
 
-#define CONNECTION_ID_LEN 4
+#define CONNECTION_ID_RAND_BYTES_LEN 4
 typedef struct {
-    unsigned char id[CONNECTION_ID_LEN];
-    char hex[(CONNECTION_ID_LEN << 1) + 1];
+    char hex[(CONNECTION_ID_RAND_BYTES_LEN << 1) + 1];
 } Connection_Id;
 
 typedef struct {
-    char user[MAX_SSH_USER];
-    char host[MAX_SSH_HOST];
+    char user[MAX_SSH_USER + 1];
+    char host[MAX_SSH_HOST + 1];
     size_t port;
 } Connection_Detail;
 
@@ -79,6 +79,14 @@ typedef struct {
     Connection_Ht *ht;
 } MCP_Args;
 
+typedef struct {
+    String_Builder *sb;
+    size_t start;
+    size_t end;
+} String_Builder_Slice;
+
+#define sbs_as_sv(sbs) sv_from_parts(sbs.sb->items + sbs.start, sbs.end - sbs.start)
+
 bool set_env_if_missing(const char *name, const char *value) {
     // Check if the variable exists
     if (getenv(name) == NULL) {
@@ -113,6 +121,14 @@ bool tools_list_clb(MCP_Request_Handler *request_handler) {
 
     mcp_begin_tool(
         request_handler,
+        TOOL_SSH_EXECUTE,
+        .desc="Execute a command on the SSH server, given it's connection_id"); {
+        mcp_add_param(request_handler, "connection_id", MCP_PARAM_TYPE_STRING, .desc="connection_id of the server (got from ssh_connect)");
+        mcp_add_param(request_handler, "cmd", MCP_PARAM_TYPE_STRING, .desc="command to execute on the server");
+    } mcp_end_tool(request_handler);
+
+    mcp_begin_tool(
+        request_handler,
         TOOL_SSH_LIST_CONNECTIONS,
         .desc="List the available control master connections"); {
     } mcp_end_tool(request_handler);
@@ -121,17 +137,18 @@ bool tools_list_clb(MCP_Request_Handler *request_handler) {
 }
 
 #define hash_connection_id(c) \
-    hash_bytes(c.id, CONNECTION_ID_LEN)
+    hash_bytes(c.hex, ARRAY_LEN(c.hex))
 
 bool is_connection_id_equal(Connection_Id id1, Connection_Id id2) {
-    return memcmp(id1.id, id2.id, CONNECTION_ID_LEN);
+    return memcmp(id1.hex, id2.hex, ARRAY_LEN(id1.hex)) == 0;
 }
 
 bool create_new_connection_id(Connection_Id *connection_id) {
-    int res = RAND_bytes(connection_id->id, ARRAY_LEN(connection_id->id));
+    unsigned char bytes[CONNECTION_ID_RAND_BYTES_LEN] = {0};
+    int res = RAND_bytes(bytes, ARRAY_LEN(bytes));
     if (res != 1) return false;
-    for (size_t i = 0; i < ARRAY_LEN(connection_id->id); i++) {
-        sprintf(connection_id->hex + (i * 2), "%02x", connection_id->id[i]);
+    for (size_t i = 0; i < ARRAY_LEN(bytes); i++) {
+        sprintf(connection_id->hex + (i * 2), "%02x", bytes[i]);
     }
     connection_id->hex[ARRAY_LEN(connection_id->hex) - 1] = '\0';
     return true;
@@ -224,49 +241,49 @@ bool handle_ssh_connect(MCP_Request_Handler *request_handler, My_Context *ctx, J
     }
 
     // Contruct user:host
-    String_View user_and_host = {0};
+    String_Builder_Slice user_and_host = {0};
     {
-        size_t start_count = ctx->sb.count;
+        user_and_host.sb = &ctx->sb;
+        user_and_host.start = ctx->sb.count;
         sb_appendf(&ctx->sb, SV_Fmt"@"SV_Fmt, SV_Arg(user), SV_Arg(host));
         sb_append_null(&ctx->sb);
-        size_t end_count = ctx->sb.count;
-        user_and_host = sv_from_parts(ctx->sb.items + start_count, end_count - start_count);
+        user_and_host.end = ctx->sb.count;
     }
 
     // Construct control socket path ssh option
-    String_View control_path_ssh_opt = {0};
+    String_Builder_Slice control_path_ssh_opt = {0};
     {
-        size_t start_count = ctx->sb.count;
+        control_path_ssh_opt.sb = &ctx->sb;
+        control_path_ssh_opt.start = ctx->sb.count;
         sb_appendf(&ctx->sb, "ControlPath=%s/master-%s", ctx->ssh_master_root, connection_id.hex);
         sb_append_null(&ctx->sb);
-        size_t end_count = ctx->sb.count;
-        control_path_ssh_opt = sv_from_parts(ctx->sb.items + start_count, end_count - start_count);
+        control_path_ssh_opt.end = ctx->sb.count;
     }
 
     // String View for port
-    String_View port_sv = {0};
+    String_Builder_Slice port_sbs = {0};
     {
-        size_t start_count = ctx->sb.count;
+        port_sbs.sb = &ctx->sb;
+        port_sbs.start = ctx->sb.count;
         sb_appendf(&ctx->sb, "%zu", port);
         sb_append_null(&ctx->sb);
-        size_t end_count = ctx->sb.count;
-        port_sv = sv_from_parts(ctx->sb.items + start_count, end_count - start_count);
+        port_sbs.end = ctx->sb.count;
     }
 
     // String View for temp path for capturing ssh stderr
-    String_View stderr_temp_path = {0};
+    String_Builder_Slice stderr_temp_path = {0};
     {
-        size_t start_count = ctx->sb.count;
+        stderr_temp_path.sb = &ctx->sb;
+        stderr_temp_path.start = ctx->sb.count;
         sb_appendf(&ctx->sb, "/tmp/master-%s", connection_id.hex);
         sb_append_null(&ctx->sb);
-        size_t end_count = ctx->sb.count;
-        stderr_temp_path = sv_from_parts(ctx->sb.items + start_count, end_count - start_count);
+        stderr_temp_path.end = ctx->sb.count;
     }
 
     // Create a new master connection
     // ssh -p {port} -o ControlPath={control_path_ssh_opt} {DEFAULT_SSH_MASTER_CONNECTION_PARAMS}
-    cmd_append(&ctx->cmd, "ssh", "-p", port_sv.data, "-o", control_path_ssh_opt.data, DEFAULT_SSH_MASTER_CONNECTION_PARAMS, user_and_host.data);
-    if (cmd_run(&ctx->cmd, .stderr_path=stderr_temp_path.data)) {
+    cmd_append(&ctx->cmd, "ssh", "-p", sbs_as_sv(port_sbs).data, "-o", sbs_as_sv(control_path_ssh_opt).data, DEFAULT_SSH_MASTER_CONNECTION_PARAMS, sbs_as_sv(user_and_host).data);
+    if (cmd_run(&ctx->cmd, .stderr_path=sbs_as_sv(stderr_temp_path).data)) {
         size_t start_count = ctx->sb.count;
         sb_appendf(&ctx->sb, "Connection is successful, connection_id: %s", connection_id.hex);
         size_t end_count = ctx->sb.count;
@@ -280,22 +297,144 @@ bool handle_ssh_connect(MCP_Request_Handler *request_handler, My_Context *ctx, J
         return true;
     } else {
         size_t start_count = ctx->sb.count;
-        sb_appendf(&ctx->sb, "Connection failed, Reason: |");
-        read_entire_file(stderr_temp_path.data, &ctx->sb);
-        sb_append_cstr(&ctx->sb, "|");
+        sb_appendf(&ctx->sb, "Connection failed, Reason is below:\n");
+        if (!read_entire_file(sbs_as_sv(stderr_temp_path).data, &ctx->sb)) {
+            sb_appendf(&ctx->sb, "Could not open the stderr file to see the reason: `%s`", sbs_as_sv(stderr_temp_path).data);
+        }
         size_t end_count = ctx->sb.count;
         mcp_write_text_content_sized(request_handler, ctx->sb.items + start_count, end_count - start_count);
-        ctx->sb.items -= end_count - start_count;
+        return false;
+    }
+}
+
+bool handle_ssh_execute(MCP_Request_Handler *request_handler, My_Context *ctx, Jimp *tool_args) {
+    String_Builder_Slice connection_id_hex = {0};
+    String_Builder_Slice cmd = {0};
+
+    if (!jimp_object_begin(tool_args)) return false;
+    while (jimp_object_member(tool_args)) {
+        if (strcmp(tool_args->string, "connection_id") == 0) {
+            if (!jimp_string(tool_args)) return false;
+            connection_id_hex.sb = &ctx->sb;
+            connection_id_hex.start = ctx->sb.count;
+            sb_appendf(&ctx->sb, "%s", tool_args->string);
+            sb_append_null(&ctx->sb);
+            connection_id_hex.end = ctx->sb.count;
+        } else if (strcmp(tool_args->string, "cmd") == 0) {
+            if (!jimp_string(tool_args)) return false;
+            cmd.sb = &ctx->sb;
+            cmd.start = ctx->sb.count;
+            sb_appendf(&ctx->sb, "%s", tool_args->string);
+            sb_append_null(&ctx->sb);
+            cmd.end = ctx->sb.count;
+        } else if (!jimp_skip_member(tool_args)) return false;
+    }
+    if (!jimp_object_end(tool_args)) return false;
+
+    if (!connection_id_hex.sb) {
+        mcp_write_text_content(request_handler, "connection_id was not provided!");
+        return false;
+    }
+    if (!cmd.sb) {
+        mcp_write_text_content(request_handler, "cmd was not provided!");
+        return false;
+    }
+
+    Connection_Id connection_id = {0};
+    if (sbs_as_sv(connection_id_hex).count != ARRAY_LEN(connection_id.hex)) {
+        mcp_write_text_content(request_handler, "Invalid connection_id passed!");
+        return false;
+    }
+    memcpy(connection_id.hex, sbs_as_sv(connection_id_hex).data, ARRAY_LEN(connection_id.hex));
+
+    Connection_Detail connection_detail = {0};
+    if (!get_connection_detail(ctx->ht, connection_id, &connection_detail)) {
+        mcp_write_text_content(request_handler, "Unknown connection_id passed! Use ssh_list_connections to see the list of valid connections");
+        return false;
+    }
+
+    // Contruct user:host
+    String_Builder_Slice user_and_host = {0};
+    {
+        user_and_host.sb = &ctx->sb;
+        user_and_host.start = ctx->sb.count;
+        sb_appendf(&ctx->sb, "%s@%s", connection_detail.user, connection_detail.host);
+        sb_append_null(&ctx->sb);
+        user_and_host.end = ctx->sb.count;
+    }
+
+    // Construct control socket path ssh option
+    String_Builder_Slice control_path_ssh_opt = {0};
+    {
+        control_path_ssh_opt.sb = &ctx->sb;
+        control_path_ssh_opt.start = ctx->sb.count;
+        sb_appendf(&ctx->sb, "ControlPath=%s/master-%s", ctx->ssh_master_root, connection_id.hex);
+        sb_append_null(&ctx->sb);
+        control_path_ssh_opt.end = ctx->sb.count;
+    }
+
+    // String View for port
+    String_Builder_Slice port_sbs = {0};
+    {
+        port_sbs.sb = &ctx->sb;
+        port_sbs.start = ctx->sb.count;
+        sb_appendf(&ctx->sb, "%zu", connection_detail.port);
+        sb_append_null(&ctx->sb);
+        port_sbs.end = ctx->sb.count;
+    }
+
+    size_t request_id = request_handler->jsonrpc_request_handler.request_parser.id;
+    // String View for temp path for capturing ssh stdout
+    String_View stdout_temp_path = {0};
+    {
+        size_t start_count = ctx->sb.count;
+        sb_appendf(&ctx->sb, "/tmp/master-%s__ssh_execute__%zu_stdout", connection_id.hex, request_id);
+        sb_append_null(&ctx->sb);
+        size_t end_count = ctx->sb.count;
+        stdout_temp_path = sv_from_parts(ctx->sb.items + start_count, end_count - start_count);
+    }
+    // String View for temp path for capturing ssh stderr
+    String_View stderr_temp_path = {0};
+    {
+        size_t start_count = ctx->sb.count;
+        sb_appendf(&ctx->sb, "/tmp/master-%s__ssh_execute__%zu_stderr", connection_id.hex, request_id);
+        sb_append_null(&ctx->sb);
+        size_t end_count = ctx->sb.count;
+        stderr_temp_path = sv_from_parts(ctx->sb.items + start_count, end_count - start_count);
+    }
+    // ssh -o ControlPath={control_path} -o ControlMaster=no -p {port} {user}@{host} {cmd}
+    cmd_append(&ctx->cmd, "ssh", "-o", "ControlMaster=no", "-o", sbs_as_sv(control_path_ssh_opt).data, "-p", sbs_as_sv(port_sbs).data, sbs_as_sv(user_and_host).data, sbs_as_sv(cmd).data);
+    if (cmd_run(&ctx->cmd, .stdout_path=stdout_temp_path.data, .stderr_path=stderr_temp_path.data)) {
+        size_t start_count = ctx->sb.count;
+        sb_append_cstr(&ctx->sb, "Successfully executed the command. Output is below:\n");
+        if (!read_entire_file(stdout_temp_path.data, &ctx->sb)) {
+            sb_appendf(&ctx->sb, "Successfully executed the command, but could not open the stdout file to see the result: `%s`", stdout_temp_path.data);
+        }
+        size_t end_count = ctx->sb.count;
+        mcp_write_text_content_sized(request_handler, ctx->sb.items + start_count, end_count - start_count);
+        return true;
+    } else {
+        size_t start_count = ctx->sb.count;
+        sb_appendf(&ctx->sb, "Connection failed, Reason is below:\n");
+        if (!read_entire_file(stderr_temp_path.data, &ctx->sb)) {
+            sb_appendf(&ctx->sb, "Could not open the stderr file to see the reason: `%s`", stderr_temp_path.data);
+        }
+        size_t end_count = ctx->sb.count;
+        mcp_write_text_content_sized(request_handler, ctx->sb.items + start_count, end_count - start_count);
         return false;
     }
 }
 
 bool handle_ssh_list_connections(MCP_Request_Handler *request_handler, My_Context *ctx) {
     assert(ctx != NULL);
-    sb_append_cstr(&ctx->sb, "Below are the list of connection ids:");
+    sb_append_cstr(&ctx->sb, "Below are the list of connections:");
     pthread_mutex_lock(&ctx->ht->lock);
     ht_foreach(Connection_Ht_Slot, it, ctx->ht) {
-        mcp_write_text_content(request_handler, it->key.hex);
+        size_t start_count = ctx->sb.count;
+        sb_appendf(&ctx->sb, "[%s] %s@%s:%zu", it->key.hex, it->value.user, it->value.host, it->value.port);
+        size_t end_count = ctx->sb.count;
+        mcp_write_text_content_sized(request_handler, ctx->sb.items + start_count, end_count - start_count);
+        ctx->sb.count -= end_count - start_count;
     }
     pthread_mutex_unlock(&ctx->ht->lock);
     return true;
@@ -310,8 +449,20 @@ bool tools_call_clb(MCP_Request_Handler *request_handler, String_View tool_name,
     ctx->sb.count = 0; // Cleanup String_Builder
     ctx->cmd.count = 0; // Cleanup CMD
 
+    // Responding with thread id
+    {
+        pthread_t tid = pthread_self();
+        size_t start_count = ctx->sb.count;
+        sb_appendf(&ctx->sb, "Executing on thread: %lu", (unsigned long) tid);
+        size_t end_count = ctx->sb.count;
+        mcp_write_text_content_sized(request_handler, ctx->sb.items + start_count, end_count - start_count);
+        ctx->sb.count -= end_count - start_count;
+    }
+
     if (sv_eq(tool_name, sv_from_cstr(TOOL_SSH_CONNECT))) {
         return handle_ssh_connect(request_handler, ctx, tool_args);
+    } else if (sv_eq(tool_name, sv_from_cstr(TOOL_SSH_EXECUTE))) {
+        return handle_ssh_execute(request_handler, ctx, tool_args);
     } else if (sv_eq(tool_name, sv_from_cstr(TOOL_SSH_LIST_CONNECTIONS))) {
         return handle_ssh_list_connections(request_handler, ctx);
     }
