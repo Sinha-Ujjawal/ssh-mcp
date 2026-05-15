@@ -137,10 +137,10 @@ struct {
         size_t _nob_ht_delete_key_i;                                                                                                                                   \
         nob__ht_find_slot((*(ht)), hash_fn, is_eql_fn, (key_expr), &_nob_ht_delete_key_i);                                                                             \
         if (!(ht)->items[_nob_ht_delete_key_i].is_occupied) break;                                                                                                     \
-        (ht)->items[_nob_ht_delete_key_i].is_occupied = false;                                                                                                         \
         if ((out) != NULL) {                                                                                                                                           \
             *(out) = (ht)->items[_nob_ht_delete_key_i];                                                                                                                \
         }                                                                                                                                                              \
+        (ht)->items[_nob_ht_delete_key_i].is_occupied = false;                                                                                                         \
         size_t _nob_ht_delete_key_j = _nob_ht_delete_key_i;                                                                                                            \
         for (;;) {                                                                                                                                                     \
             _nob_ht_delete_key_j = (_nob_ht_delete_key_j + 1) & ((ht)->capacity - 1);                                                                                  \

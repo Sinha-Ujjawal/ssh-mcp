@@ -34,6 +34,7 @@
 
 #define TOOL_SSH_CONNECT          "ssh_connect"
 #define TOOL_SSH_EXECUTE          "ssh_execute"
+#define TOOL_SSH_DISCONNECT       "ssh_disconnect"
 #define TOOL_SSH_LIST_CONNECTIONS "ssh_list_connections"
 
 #define CONNECTION_ID_RAND_BYTES_LEN 4
@@ -129,6 +130,13 @@ bool tools_list_clb(MCP_Request_Handler *request_handler) {
 
     mcp_begin_tool(
         request_handler,
+        TOOL_SSH_DISCONNECT,
+        .desc="Disconnect from an existing connection_id"); {
+        mcp_add_param(request_handler, "connection_id", MCP_PARAM_TYPE_STRING, .desc="connection_id of the server (got from ssh_connect)");
+    } mcp_end_tool(request_handler);
+
+    mcp_begin_tool(
+        request_handler,
         TOOL_SSH_LIST_CONNECTIONS,
         .desc="List the available control master connections"); {
     } mcp_end_tool(request_handler);
@@ -157,6 +165,7 @@ bool create_new_connection_id(Connection_Id *connection_id) {
 void put_connection_detail(Connection_Ht *ht, Connection_Id id, Connection_Detail detail) {
     pthread_mutex_lock(&ht->lock);
     ssize_t out = HT_NOT_FOUND;
+    nob_log(INFO, "put_connection_detail(%s), hash: %zu", id.hex, hash_connection_id(id));
     ht_insert_key(ht, hash_connection_id, is_connection_id_equal, id, &out);
     assert(out != (ssize_t) HT_NOT_FOUND);
     ht->items[out].value = detail;
@@ -168,6 +177,7 @@ bool get_connection_detail(Connection_Ht *ht, Connection_Id id, Connection_Detai
     pthread_mutex_lock(&ht->lock);
 
     ssize_t out = HT_NOT_FOUND;
+    nob_log(INFO, "get_connection_detail(%s), hash: %zu", id.hex, hash_connection_id(id));
     ht_get_key(ht, hash_connection_id, is_connection_id_equal, id, &out);
     if (out != (ssize_t) HT_NOT_FOUND) {
         *detail = ht->items[out].value;
@@ -183,10 +193,12 @@ bool delete_connection_detail(Connection_Ht *ht, Connection_Id id, Connection_De
     bool result = false;
     pthread_mutex_lock(&ht->lock);
 
-    Connection_Ht_Slot *ptr = NULL;
-    ht_delete_key(ht, hash_connection_id, is_connection_id_equal, id, ptr);
-    if (ptr != NULL) {
-        *detail = ptr->value;
+    Connection_Ht_Slot slot = {0};
+    nob_log(INFO, "delete_connection_detail(%s), hash: %zu", id.hex, hash_connection_id(id));
+    ht_delete_key(ht, hash_connection_id, is_connection_id_equal, id, &slot);
+    if (slot.is_occupied) {
+        nob_log(INFO, "Deleted connection_id: %s", id.hex);
+        *detail = slot.value;
         return_defer(true);
     }
 
@@ -425,6 +437,68 @@ bool handle_ssh_execute(MCP_Request_Handler *request_handler, My_Context *ctx, J
     }
 }
 
+bool handle_ssh_disconnect(MCP_Request_Handler *request_handler, My_Context *ctx, Jimp *tool_args) {
+    String_Builder_Slice connection_id_hex = {0};
+
+    if (!jimp_object_begin(tool_args)) return false;
+    while (jimp_object_member(tool_args)) {
+        if (strcmp(tool_args->string, "connection_id") == 0) {
+            if (!jimp_string(tool_args)) return false;
+            connection_id_hex.sb = &ctx->sb;
+            connection_id_hex.start = ctx->sb.count;
+            sb_appendf(&ctx->sb, "%s", tool_args->string);
+            sb_append_null(&ctx->sb);
+            connection_id_hex.end = ctx->sb.count;
+        } else if (!jimp_skip_member(tool_args)) return false;
+    }
+    if (!jimp_object_end(tool_args)) return false;
+
+    if (!connection_id_hex.sb) {
+        mcp_write_text_content(request_handler, "connection_id was not provided!");
+        return false;
+    }
+
+    Connection_Id connection_id = {0};
+    if (sbs_as_sv(connection_id_hex).count != ARRAY_LEN(connection_id.hex)) {
+        mcp_write_text_content(request_handler, "Invalid connection_id passed!");
+        return false;
+    }
+    memcpy(connection_id.hex, sbs_as_sv(connection_id_hex).data, ARRAY_LEN(connection_id.hex));
+
+    Connection_Detail connection_detail = {0};
+    if (!delete_connection_detail(ctx->ht, connection_id, &connection_detail)) {
+        mcp_write_text_content(request_handler, "Unknown connection_id passed! Use ssh_list_connections to see the list of valid connections");
+        return false;
+    }
+
+    // Contruct user:host
+    String_Builder_Slice user_and_host = {0};
+    {
+        user_and_host.sb = &ctx->sb;
+        user_and_host.start = ctx->sb.count;
+        sb_appendf(&ctx->sb, "%s@%s", connection_detail.user, connection_detail.host);
+        sb_append_null(&ctx->sb);
+        user_and_host.end = ctx->sb.count;
+    }
+
+    // Construct control socket path ssh option
+    String_Builder_Slice control_path_ssh_opt = {0};
+    {
+        control_path_ssh_opt.sb = &ctx->sb;
+        control_path_ssh_opt.start = ctx->sb.count;
+        sb_appendf(&ctx->sb, "ControlPath=%s/master-%s", ctx->ssh_master_root, connection_id.hex);
+        sb_append_null(&ctx->sb);
+        control_path_ssh_opt.end = ctx->sb.count;
+    }
+
+    // ssh -O exit -o ControlPath={control_path} {user}@{host}
+    cmd_append(&ctx->cmd, "ssh", "-o", sbs_as_sv(control_path_ssh_opt).data, sbs_as_sv(user_and_host).data);
+    String_View control_path = sbs_as_sv(control_path_ssh_opt);
+    sv_chop_prefix(&control_path, sv_from_cstr("ControlPath="));
+    delete_file(control_path.data);
+    return true;
+}
+
 bool handle_ssh_list_connections(MCP_Request_Handler *request_handler, My_Context *ctx) {
     assert(ctx != NULL);
     sb_append_cstr(&ctx->sb, "Below are the list of connections:");
@@ -463,6 +537,8 @@ bool tools_call_clb(MCP_Request_Handler *request_handler, String_View tool_name,
         return handle_ssh_connect(request_handler, ctx, tool_args);
     } else if (sv_eq(tool_name, sv_from_cstr(TOOL_SSH_EXECUTE))) {
         return handle_ssh_execute(request_handler, ctx, tool_args);
+    } else if (sv_eq(tool_name, sv_from_cstr(TOOL_SSH_DISCONNECT))) {
+        return handle_ssh_disconnect(request_handler, ctx, tool_args);
     } else if (sv_eq(tool_name, sv_from_cstr(TOOL_SSH_LIST_CONNECTIONS))) {
         return handle_ssh_list_connections(request_handler, ctx);
     }

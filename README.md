@@ -18,13 +18,23 @@ cc -o nob nob.c && ./nob
 ./build/ssh-mcp
 ```
 
+## How it works?
+
+1. `ssh_connect` will create master connection using ControlMaster. It will create that socket `~/.ssh/`.
+2. `ssh_execute` will create slave connection to a previously created connection_id (`ssh_connect`) and execute the commands.
+3. `ssh_list_connections` will list the available connection that was created in the current session.
+4. `ssh_disconnect` will disconnect from an existing connection_id. It will also delete the corresponding socker file.
+
+**Note that the MCP server maintains a hashtable of connections in the current session, and it is not shared with different sessions. You will need to manually delete any stale socket connection file from `~/.ssh`.**
+
 ## Current Tools List:
 
 | Tool Name | Description |
 | :--- | :--- |
-| `ssh-mcp_ssh_connect` | Connect to a server via SSH. |
-| `ssh-mcp_ssh_execute` | Execute a command on the SSH server, given its connection ID. |
-| `ssh-mcp_ssh_list_connections` | List the available control master connections. |
+| `ssh_connect` | Connect to a server via SSH. |
+| `ssh_execute` | Execute a command on the SSH server, given its connection ID. |
+| `ssh_list_connections` | List the available control master connections. |
+| `ssh_disconnect` | Disconnect from an existing SSH connection. |
 
 ## Copyrights
 
