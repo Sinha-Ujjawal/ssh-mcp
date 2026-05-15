@@ -7,6 +7,7 @@ A simple MCP Server Implementation for managing SSH connections in C. This is a 
 ## Dependencies:
 - [libssl-dev](https://packages.debian.org/sid/libssl-dev)
 - [Zenity](https://en.wikipedia.org/wiki/Zenity)
+- [nob_utils](https://github.com/Sinha-Ujjawal/nob_utils)
 
 ## Build:
 ```console
